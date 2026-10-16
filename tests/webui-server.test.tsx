@@ -1,0 +1,334 @@
+//
+// Copyright (c) MINETA "m10i" Hiroki <h-mineta@0nyx.net>
+// This software is released under the MIT License.
+//
+
+import { beforeEach, describe, expect, test } from "bun:test";
+
+import type { RaceInfoRecord } from "../src/db/schema.ts";
+import type {
+    HorseEntry,
+    NetkeibaClient,
+    RaceDate,
+    RaceInformation,
+    RaceListItem,
+} from "../src/webui/netkeiba-client.ts";
+import { createApp, type WebUiDependencies } from "../src/webui/server.tsx";
+import { createRecordingLogger } from "./mock-fetch.ts";
+
+const HORSE: HorseEntry = {
+    horseId: 2099100001,
+    horseNumber: 3,
+    wakuNumber: 2,
+    horseName: "テストホース<b>",
+    barei: "牝2",
+    basisWeight: 55,
+    jockeyId: "01001",
+    jockeyName: "騎手",
+    trainerId: "01002",
+    trainerName: "調教師",
+    odds: 4.8,
+    popularity: 3,
+    horseWeight: 408,
+    horseWeightDiff: 4,
+};
+
+const DATES: RaceDate[] = [
+    { text: "7/6(日)", href: "race_list.html?kaisai_date=20250706", kaisaiDate: "2025-07-06" },
+    { text: "7/13(日)", href: "race_list.html?kaisai_date=20250713", kaisaiDate: "2025-07-13" },
+];
+
+const RACES: RaceListItem[] = [
+    {
+        courseName: "札幌",
+        raceNumber: "1R",
+        raceName: "テスト未勝利",
+        text: "札幌 - 1R  - テスト未勝利",
+        href: "../race/shutuba.html?race_id=209901010101",
+        raceId: 209901010101,
+    },
+    {
+        courseName: "札幌",
+        raceNumber: "2R",
+        raceName: "名称",
+        text: "札幌 - 2R  - 名称",
+        href: "../race/shutuba.html?race_id=209901010102",
+        raceId: 209901010102,
+    },
+];
+
+function information(raceId: number, overrides: Partial<RaceInformation["race"]> = {}): RaceInformation {
+    return {
+        race: {
+            id: raceId,
+            raceName: "テスト未勝利<script>alert(1)</script>",
+            distance: 1200,
+            weather: "曇",
+            postTime: "09:55",
+            raceNumber: 1,
+            runDirection: "右",
+            trackSurface: "芝",
+            trackCondition: "良",
+            trackConditionScore: null,
+            raceGrade: 4,
+            raceClass: "未勝利",
+            ...overrides,
+        },
+        horses: [HORSE],
+    };
+}
+
+type Harness = {
+    app: ReturnType<typeof createApp>;
+    saved: RaceInfoRecord[];
+    savedIds: Set<number>;
+    calls: { dates: number; lists: string[]; information: number[] };
+    logger: ReturnType<typeof createRecordingLogger>;
+    behavior: {
+        failFetchDates: boolean;
+        failSave: boolean;
+        failIsSaved: boolean;
+        info: Partial<RaceInformation["race"]>;
+    };
+};
+
+function createHarness(): Harness {
+    const saved: RaceInfoRecord[] = [];
+    const savedIds = new Set<number>();
+    const calls: Harness["calls"] = { dates: 0, lists: [], information: [] };
+    const logger = createRecordingLogger();
+    const behavior: Harness["behavior"] = { failFetchDates: false, failSave: false, failIsSaved: false, info: {} };
+
+    const client: NetkeibaClient = {
+        fetchRaceDates: async () => {
+            calls.dates++;
+            if (behavior.failFetchDates) {
+                throw new Error("browser crashed");
+            }
+            return DATES;
+        },
+        fetchRaceList: async (link) => {
+            calls.lists.push(link);
+            return RACES;
+        },
+        fetchRaceInformation: async (raceId) => {
+            calls.information.push(raceId);
+            return information(raceId, behavior.info);
+        },
+        close: async () => {},
+    };
+    const dependencies: WebUiDependencies = {
+        client,
+        logger,
+        today: () => "2025-07-01",
+        isHostAllowed: (hostname) => ["localhost", "127.0.0.1", "[::1]"].includes(hostname),
+        isRaceSaved: async (raceId) => {
+            if (behavior.failIsSaved) {
+                throw new Error("db down");
+            }
+            return savedIds.has(raceId);
+        },
+        saveRaceInfo: async (record) => {
+            if (behavior.failSave) {
+                throw new Error("varchar overflow");
+            }
+            saved.push(record);
+            savedIds.add(record.id);
+        },
+    };
+    return { app: createApp(dependencies), saved, savedIds, calls, logger, behavior };
+}
+
+const FORM_HEADERS = {
+    "content-type": "application/x-www-form-urlencoded",
+    origin: "http://localhost",
+    host: "localhost",
+};
+
+function postSave(harness: Harness, fields: Record<string, string>, headers: Record<string, string> = FORM_HEADERS) {
+    return harness.app.request("/save", { method: "POST", headers, body: new URLSearchParams(fields).toString() });
+}
+
+let harness: Harness;
+
+beforeEach(() => {
+    harness = createHarness();
+});
+
+describe("GET /", () => {
+    test("shows the first date, race and its details by default", async () => {
+        const response = await harness.app.request("/", { headers: { host: "localhost" } });
+        expect(response.status).toBe(200);
+        const html = await response.text();
+        expect(html).toContain("7/6(日)");
+        expect(html).toContain("2025-07-06 のレース一覧");
+        expect(html).toContain("札幌 - 1R  - テスト未勝利");
+        expect(html).toContain("出走馬情報");
+        expect(harness.calls.information).toEqual([209901010101]);
+    });
+
+    test("escapes values that come from the site", async () => {
+        const html = await (await harness.app.request("/", { headers: { host: "localhost" } })).text();
+        expect(html).not.toContain("<script>alert(1)</script>");
+        expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+        expect(html).not.toContain("テストホース<b>");
+        expect(html).toContain("テストホース&lt;b&gt;");
+    });
+
+    test("selects by index and clamps invalid indexes to the first entry", async () => {
+        await harness.app.request("/?date=1&race=1", { headers: { host: "localhost" } });
+        await harness.app.request("/?date=99&race=abc", { headers: { host: "localhost" } });
+        await harness.app.request("/?date=-1&race=1e3", { headers: { host: "localhost" } });
+        expect(harness.calls.lists).toEqual([DATES[1]?.href, DATES[0]?.href]);
+        expect(harness.calls.information).toEqual([209901010102, 209901010101]);
+    });
+
+    test("caches site requests between page views", async () => {
+        await harness.app.request("/", { headers: { host: "localhost" } });
+        await harness.app.request("/", { headers: { host: "localhost" } });
+        expect(harness.calls.dates).toBe(1);
+        expect(harness.calls.lists).toHaveLength(1);
+        expect(harness.calls.information).toHaveLength(1);
+    });
+
+    test("sets restrictive security headers", async () => {
+        const response = await harness.app.request("/", { headers: { host: "localhost" } });
+        const csp = response.headers.get("content-security-policy") ?? "";
+        expect(csp).toContain("default-src 'none'");
+        expect(csp).toContain("frame-ancestors 'none'");
+        expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    });
+
+    test("rejects unexpected Host headers", async () => {
+        const response = await harness.app.request("/", { headers: { host: "evil.example" } });
+        expect(response.status).toBe(403);
+        expect(harness.calls.dates).toBe(0);
+    });
+
+    test("accepts localhost with a port and IPv6 loopback", async () => {
+        expect((await harness.app.request("/", { headers: { host: "localhost:8501" } })).status).toBe(200);
+        expect((await harness.app.request("/", { headers: { host: "127.0.0.1:8501" } })).status).toBe(200);
+        expect((await harness.app.request("/", { headers: { host: "[::1]:8501" } })).status).toBe(200);
+    });
+
+    test("shows only whitelisted notices and ignores arbitrary text", async () => {
+        const known = await (await harness.app.request("/?n=saved", { headers: { host: "localhost" } })).text();
+        expect(known).toContain("レース情報をDBへ保管しました。");
+        const unknown = await (
+            await harness.app.request("/?n=%3Cscript%3Ex%3C/script%3E", { headers: { host: "localhost" } })
+        ).text();
+        expect(unknown).not.toContain("<script>x</script>");
+        const prototypeKey = await (await harness.app.request("/?n=constructor", { headers: { host: "localhost" } }))
+            .status;
+        expect(prototypeKey).toBe(200);
+    });
+
+    test("shows an error notice and logs when the site cannot be reached", async () => {
+        harness.behavior.failFetchDates = true;
+        const response = await harness.app.request("/", { headers: { host: "localhost" } });
+        expect(response.status).toBe(200);
+        expect(await response.text()).toContain("開催日を取得できませんでした");
+        expect(harness.logger.ofLevel("error")[0]).toContain("browser crashed");
+    });
+
+    test("keeps working when the DB cannot tell whether the race is saved", async () => {
+        harness.behavior.failIsSaved = true;
+        const response = await harness.app.request("/", { headers: { host: "localhost" } });
+        expect(response.status).toBe(200);
+        expect(harness.logger.ofLevel("error")[0]).toContain("db down");
+    });
+
+    test("explains why a race cannot be saved when the name is missing", async () => {
+        harness.behavior.info = { raceName: null };
+        const html = await (await harness.app.request("/", { headers: { host: "localhost" } })).text();
+        expect(html).toContain("保管できません");
+        expect(html).toContain("disabled");
+    });
+});
+
+describe("POST /save", () => {
+    async function view(): Promise<void> {
+        await harness.app.request("/?date=0&race=0", { headers: { host: "localhost" } });
+    }
+
+    test("saves the displayed race with the date and place from the list", async () => {
+        await view();
+        const response = await postSave(harness, { raceId: "209901010101", date: "0", race: "0" });
+        expect(response.status).toBe(303);
+        expect(response.headers.get("location")).toBe("/?date=0&race=0&n=saved");
+        expect(harness.saved).toHaveLength(1);
+        expect(harness.saved[0]).toMatchObject({
+            id: 209901010101,
+            date: "2025-07-06",
+            placeDetail: "札幌",
+            raceNumber: 1,
+            distance: 1200,
+            postTime: "09:55",
+        });
+    });
+
+    test("does not save twice and reports the existing record", async () => {
+        await view();
+        await postSave(harness, { raceId: "209901010101", date: "0", race: "0" });
+        const second = await postSave(harness, { raceId: "209901010101", date: "0", race: "0" });
+        expect(second.headers.get("location")).toContain("n=exists");
+        expect(harness.saved).toHaveLength(1);
+    });
+
+    test("refuses a race that was not displayed (nothing to save from)", async () => {
+        const response = await postSave(harness, { raceId: "209901010101", date: "0", race: "0" });
+        expect(response.headers.get("location")).toContain("n=expired");
+        expect(harness.saved).toHaveLength(0);
+    });
+
+    test("ignores any race content sent by the client", async () => {
+        await view();
+        await postSave(harness, {
+            raceId: "209901010101",
+            date: "0",
+            race: "0",
+            raceName: "tampered",
+            date_: "1999-01-01",
+        });
+        expect(harness.saved[0]?.raceName).toContain("テスト未勝利");
+    });
+
+    test("rejects malformed race ids", async () => {
+        for (const raceId of ["", "abc", "1; DROP TABLE", "-5", "1".repeat(30)]) {
+            const response = await postSave(harness, { raceId });
+            expect(response.status).toBe(400);
+        }
+        expect(harness.saved).toHaveLength(0);
+    });
+
+    test("reports a save failure without leaking the error", async () => {
+        await view();
+        harness.behavior.failSave = true;
+        const response = await postSave(harness, { raceId: "209901010101", date: "0", race: "0" });
+        expect(response.headers.get("location")).toContain("n=failed");
+        expect(harness.logger.ofLevel("error")[0]).toContain("varchar overflow");
+    });
+
+    test("sanitizes redirect indexes", async () => {
+        await view();
+        const response = await postSave(harness, { raceId: "209901010101", date: "<x>", race: "99999999999" });
+        expect(response.headers.get("location")).toBe("/?date=0&race=0&n=saved");
+    });
+
+    test("is rejected for a cross origin request", async () => {
+        await view();
+        const response = await postSave(
+            harness,
+            { raceId: "209901010101" },
+            { ...FORM_HEADERS, origin: "http://evil.example" },
+        );
+        expect(response.status).toBe(403);
+        expect(harness.saved).toHaveLength(0);
+    });
+
+    test("is rejected for an unexpected Host header", async () => {
+        await view();
+        const response = await postSave(harness, { raceId: "209901010101" }, { ...FORM_HEADERS, host: "evil.example" });
+        expect(response.status).toBe(403);
+    });
+});
