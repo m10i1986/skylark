@@ -13,11 +13,15 @@ import { SkylarkCrud } from "./db/crud.ts";
 import { buildFeatures, defaultFeatureConcurrency } from "./feature.ts";
 import { createLogger, type Logger } from "./logger.ts";
 import { downloadRaces, login } from "./scraper/downloader.ts";
-import { fetchEucJpHtml, readResponseText, requestWithTimeout } from "./scraper/http.ts";
+import { fetchEucJpHtml, HttpStatusError, readResponseText, requestWithTimeout } from "./scraper/http.ts";
 import { exportRaceUrlList, importRaceUrlList, makeRaceUrlList, raceUrlPathsFromIds } from "./scraper/race-list.ts";
 
+// エラー応答の本文を一覧として読まないよう 2xx以外は例外にする
 async function fetchPageText(url: string, timeoutSeconds: number): Promise<string> {
     const response = await requestWithTimeout(url, timeoutSeconds);
+    if (!response.ok) {
+        throw new HttpStatusError(response.status, url);
+    }
     return readResponseText(response);
 }
 

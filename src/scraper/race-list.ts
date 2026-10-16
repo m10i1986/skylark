@@ -6,7 +6,7 @@
 import { mkdir, rename } from "node:fs/promises";
 import path from "node:path";
 
-import { type CheerioAPI, load } from "cheerio";
+import { load } from "cheerio";
 
 import { sleep } from "../concurrency.ts";
 import { describeError, type Logger } from "../logger.ts";
@@ -14,14 +14,24 @@ import { describeError, type Logger } from "../logger.ts";
 /** レース結果データベースのURL */
 export const DB_BASE_URL = "https://db.netkeiba.com";
 
-const RACE_PATH_PATTERN = /^\/race\/\d{12}\/$/;
-const RACE_LIST_PATH_PATTERN = /^\/race\/list\/\d{8}\/$/;
+const RACE_PATH_PATTERN = /^\/race\/(\d{12})\/$/;
+const RACE_LIST_PATH_PATTERN = /^\/race\/list\/(\d{8})\/$/;
 
-// 空の応答が続いた場合に諦めるまでの回数 移植元はここで無限ループしていた
-const MAX_CONSECUTIVE_EMPTY_RESPONSES = 3;
-// 日別一覧の取得を試みる回数
-const LIST_FETCH_ATTEMPTS = 2;
-const LIST_RETRY_DELAY_MS = 3000;
+// 対象外の場コード(レースIDの5〜6桁目) 65=ばんえい競馬 馬IDが英数字(例: B202300104)で保存できない
+const EXCLUDED_PLACE_CODES: ReadonlySet<string> = new Set(["65"]);
+
+// 月のレース開催カレンダー(HTMLを文字列としてJSONへ入れた応答)を返すAPI トップページのカレンダーはこれで描画される
+const CALENDAR_API_URL = `${DB_BASE_URL}/race/ajax_race_calendar.html`;
+
+// 月のカレンダーを取得できないことが続いた場合に諦めるまでの月数 移植元は空の応答でここを無限ループしていた
+const MAX_CONSECUTIVE_FAILED_MONTHS = 3;
+// ページ1件の取得を試みる回数 日別一覧は混雑時に数秒かかり 既定のタイムアウトを超えることがある
+const FETCH_ATTEMPTS = 3;
+const RETRY_DELAY_MS = 3000;
+// 相手サーバーへの負荷を抑えるため 取得のたびに置く待機時間
+const DEFAULT_REQUEST_DELAY_MS = 500;
+// 開催日は日本時間で決まる
+const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
 
 /** レースID群から結果ページのパス一覧を作る */
 export function raceUrlPathsFromIds(raceIds: readonly string[]): string[] {
@@ -67,102 +77,183 @@ export type RaceListDependencies = {
     // URLを取得して本文を返す 失敗時は例外
     fetchHtml: (url: string) => Promise<string>;
     sleep?: (milliseconds: number) => Promise<void>;
+    // 起点にする時刻 省略時は現在 テストで差し替える
+    now?: Date;
+    // 取得のたびに置く待機時間(ミリ秒)
+    requestDelayMilliseconds?: number;
 };
+
+/** 年と月(1から12)を表す */
+export type YearMonth = { year: number; month: number };
+
+function pad(value: number, width: number): string {
+    return String(value).padStart(width, "0");
+}
+
+// 日本時間の今日の年月と YYYYMMDD を返す
+function todayInJapan(now: Date): { yearMonth: YearMonth; yyyymmdd: string } {
+    const shifted = new Date(now.getTime() + JST_OFFSET_MS);
+    const year = shifted.getUTCFullYear();
+    const month = shifted.getUTCMonth() + 1;
+    return { yearMonth: { year, month }, yyyymmdd: `${pad(year, 4)}${pad(month, 2)}${pad(shifted.getUTCDate(), 2)}` };
+}
+
+function monthsBefore({ year, month }: YearMonth, count: number): YearMonth {
+    const index = year * 12 + (month - 1) - count;
+    return { year: Math.floor(index / 12), month: (index % 12) + 1 };
+}
+
+/**
+ * hrefをdb.netkeiba.comのパスへ直す 絶対URLと相対パスのどちらも受ける
+ *
+ * @param href - リンク先
+ * @param pattern - パスが従う形式
+ * @returns 形式に合うパス 別のサイトや形式違いの場合はnull
+ */
+function toDatabasePath(href: string | undefined, pattern: RegExp): string | null {
+    if (href == null) {
+        return null;
+    }
+    let url: URL;
+    try {
+        url = new URL(href, DB_BASE_URL);
+    } catch {
+        return null;
+    }
+    return url.origin === DB_BASE_URL && pattern.test(url.pathname) ? url.pathname : null;
+}
+
+/**
+ * 月のカレンダーから 指定した月の開催日別一覧のパスを取り出す
+ *
+ * @param calendarHtml - カレンダーのHTML
+ * @param month - 対象の月
+ * @param lastDate - これより後の日(YYYYMMDD)は含めない
+ * @returns 「/race/list/YYYYMMDD/」形式のパス 日付の昇順
+ */
+export function extractDayListPaths(calendarHtml: string, month: YearMonth, lastDate: string): string[] {
+    const prefix = `${pad(month.year, 4)}${pad(month.month, 2)}`;
+    const calendar = load(calendarHtml);
+    const paths = new Set<string>();
+    for (const anchor of calendar("div.race_calendar table td a").toArray()) {
+        const listPath = toDatabasePath(calendar(anchor).attr("href"), RACE_LIST_PATH_PATTERN);
+        const date = RACE_LIST_PATH_PATTERN.exec(listPath ?? "")?.[1];
+        // 月の見出しにある前後の月へのリンクは table の外にあるため対象外 念のため月も確かめる
+        if (listPath != null && date?.startsWith(prefix) && date <= lastDate) {
+            paths.add(listPath);
+        }
+    }
+    return [...paths].sort();
+}
+
+/**
+ * 日別一覧から各レース結果ページのパスを取り出す
+ *
+ * @param listHtml - 日別一覧のHTML
+ * @returns 「/race/<12桁のID>/」形式のパス 重複と対象外の場(ばんえい競馬)は除く
+ */
+export function extractRacePaths(listHtml: string): string[] {
+    const list = load(listHtml);
+    const paths = new Set<string>();
+    for (const anchor of list("div#contents div#main div.race_list a[href]").toArray()) {
+        const racePath = toDatabasePath(list(anchor).attr("href"), RACE_PATH_PATTERN);
+        const raceId = RACE_PATH_PATTERN.exec(racePath ?? "")?.[1];
+        if (racePath != null && raceId != null && !EXCLUDED_PLACE_CODES.has(raceId.slice(4, 6))) {
+            paths.add(racePath);
+        }
+    }
+    return [...paths];
+}
 
 /**
  * 直近の月から遡って レース結果ページのパス一覧を作る
  *
- * 月のトップページ → 日別のレース一覧 → 各レースの結果ページ の順にたどる
- * 移植元の仕様のとおり 次の月へのリンクは 最後に取得できたページ(日別一覧が取れなければ月のトップ)から探す
+ * 今月から遡る月ごとに カレンダー → 開催日別のレース一覧 の順にたどり 各レースの結果ページのパスを集める
+ * 月は計算で決める(サイトのトップページは月のリンクを返さなくなった) 今日より後の日は取得しない
+ * 取得に失敗した日は読み飛ばし 最後にまとめて警告する 月のカレンダーが続けて取得できない場合は諦める
  *
- * @param periodInMonths - 遡る月数
+ * @param periodInMonths - 遡る月数(今月を含む)
  * @param dependencies - 取得処理とロガー
- * @returns 収集したパス(重複を含み得る)
+ * @returns 収集したパス 重複は除く
  */
 export async function makeRaceUrlList(periodInMonths: number, dependencies: RaceListDependencies): Promise<string[]> {
     const { logger, fetchHtml } = dependencies;
     const wait = dependencies.sleep ?? sleep;
-    const collected: string[] = [];
+    const requestDelay = dependencies.requestDelayMilliseconds ?? DEFAULT_REQUEST_DELAY_MS;
+    const today = todayInJapan(dependencies.now ?? new Date());
+    const collected = new Set<string>();
+    // 取得できず一覧から抜けた日 一覧が不完全なことに気づけるよう最後に報告する
+    const skippedDays: string[] = [];
 
-    let url = `${DB_BASE_URL}/?pid=race_top`;
-    let remainingMonths = periodInMonths;
-    let emptyResponses = 0;
-
-    while (remainingMonths > 0) {
-        let html: string;
-        try {
-            html = await fetchHtml(url);
-        } catch (error) {
-            logger.error(describeError(error));
-            return collected;
+    // 失敗や空の応答は間を置いて試し直す 取得できなければnull
+    const fetchWithRetry = async (url: string): Promise<string | null> => {
+        for (let attempt = 0; attempt < FETCH_ATTEMPTS; attempt++) {
+            try {
+                const body = await fetchHtml(url);
+                if (body !== "") {
+                    await wait(requestDelay);
+                    return body;
+                }
+                logger.warning(`html is empty: ${url}`);
+            } catch (error) {
+                logger.warning(`fetch failed: ${url}: ${describeError(error)}`);
+            }
+            if (attempt < FETCH_ATTEMPTS - 1) {
+                await wait(RETRY_DELAY_MS);
+            }
         }
+        return null;
+    };
 
-        if (html === "") {
-            logger.warning("html is empty");
-            emptyResponses++;
-            if (emptyResponses >= MAX_CONSECUTIVE_EMPTY_RESPONSES) {
-                logger.error(`giving up after ${emptyResponses} empty responses: ${url}`);
-                return collected;
+    const reportSkippedDays = (): void => {
+        if (skippedDays.length > 0) {
+            logger.warning(`race list is incomplete, ${skippedDays.length} day(s) skipped: ${skippedDays.join(", ")}`);
+        }
+    };
+
+    let failedMonths = 0;
+    for (let offset = 0; offset < periodInMonths; offset++) {
+        const month = monthsBefore(today.yearMonth, offset);
+        const calendarUrl = `${CALENDAR_API_URL}?${new URLSearchParams({
+            input: "UTF-8",
+            output: "json",
+            date: `${pad(month.year, 4)}${pad(month.month, 2)}01`,
+        })}`;
+
+        const calendarJson = await fetchWithRetry(calendarUrl);
+        let calendarHtml: unknown;
+        try {
+            calendarHtml = calendarJson == null ? null : JSON.parse(calendarJson);
+        } catch (error) {
+            logger.warning(`calendar is not JSON: ${describeError(error)}`);
+        }
+        if (typeof calendarHtml !== "string") {
+            failedMonths++;
+            logger.error(`calendar not available: ${month.year}-${pad(month.month, 2)}`);
+            if (failedMonths >= MAX_CONSECUTIVE_FAILED_MONTHS) {
+                logger.error(`giving up after ${failedMonths} months without a calendar`);
+                reportSkippedDays();
+                return [...collected];
             }
             continue;
         }
-        emptyResponses = 0;
+        failedMonths = 0;
 
-        const monthDocument = load(html);
-        // 日別一覧が取得できなかった場合に直前のページを使い続ける挙動を再現するため 現在のページを持ち回る
-        let currentDocument: CheerioAPI = monthDocument;
-
-        for (const anchor of monthDocument("div#contents table tr td a[href^='/race/list/']").toArray()) {
-            const listPath = monthDocument(anchor).attr("href");
-            if (listPath == null || !RACE_LIST_PATH_PATTERN.test(listPath)) {
+        for (const listPath of extractDayListPaths(calendarHtml, month, today.yyyymmdd)) {
+            logger.info(`race_list path: ${listPath}`);
+            const listHtml = await fetchWithRetry(DB_BASE_URL + listPath);
+            if (listHtml == null) {
+                logger.warning(`skip race list: ${listPath}`);
+                skippedDays.push(listPath);
                 continue;
             }
-            logger.info(`race_list path: ${listPath}`);
-
-            for (let attempt = 0; attempt < LIST_FETCH_ATTEMPTS; attempt++) {
-                let listHtml: string;
-                try {
-                    listHtml = await fetchHtml(DB_BASE_URL + listPath);
-                } catch (error) {
-                    logger.warning(describeError(error));
-                    continue;
-                }
-
-                if (listHtml === "") {
-                    logger.warning("html is empty");
-                    await wait(LIST_RETRY_DELAY_MS);
-                    continue;
-                }
-
-                try {
-                    currentDocument = load(listHtml);
-                } catch (error) {
-                    logger.error(describeError(error));
-                }
-                break;
-            }
-
-            // 日別一覧から各競馬場のレース結果ページのパスを取り出す
-            for (const raceAnchor of currentDocument(
-                "div#contents div#main div.race_list a[href^='/race/']",
-            ).toArray()) {
-                const racePath = currentDocument(raceAnchor).attr("href");
-                if (racePath != null && RACE_PATH_PATTERN.test(racePath)) {
-                    collected.push(racePath);
-                    logger.debug(`path: ${racePath}, name: ${currentDocument(raceAnchor).text()}`);
-                }
+            for (const racePath of extractRacePaths(listHtml)) {
+                collected.add(racePath);
+                logger.debug(`path: ${racePath}`);
             }
         }
-
-        // 前の月のページへ
-        const previousMonthPath = currentDocument("div#contents div.race_calendar li a").eq(1).attr("href");
-        if (previousMonthPath == null) {
-            logger.warning("previous month link not found, stop");
-            return collected;
-        }
-        url = `${DB_BASE_URL}${previousMonthPath}`;
-        remainingMonths--;
     }
 
-    return collected;
+    reportSkippedDays();
+    return [...collected];
 }
