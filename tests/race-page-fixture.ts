@@ -134,19 +134,68 @@ export const DEFAULT_PAYOFF_ROWS: FixturePayoffRow[] = [
     { label: "三連単", horseNumbers: "3 → 4 → 2", payoff: "4,960", popularity: "8" },
 ];
 
-function buildResultRow(row: FixtureRow): string {
+// 結果表の構成 legacy=21列(旧) current=25列(指数系の列が増え リンクが絶対URLになった)
+export type ResultLayout = "legacy" | "current";
+
+const LEGACY_HEADERS = [
+    "着<br />順",
+    "枠<br />番",
+    "馬<br />番",
+    "馬名",
+    "性齢",
+    "斤量",
+    "騎手",
+    "タイム",
+    "着差",
+    "ﾀｲﾑ<br />指数",
+    "通過",
+    "上り",
+    "単勝",
+    "人気",
+    "馬体重",
+    "調教<br />ﾀｲﾑ",
+    "厩舎<br />ｺﾒﾝﾄ",
+    "備考",
+    "調教師",
+    "馬主",
+    "賞金<br />(万円)",
+];
+
+// 現行の見出しには 指数の列に非表示の説明文が続く
+const CURRENT_HEADERS = [
+    ...LEGACY_HEADERS.slice(0, 9),
+    'ﾀｲﾑ<br />指数<span class="hidden">タイム指数(通常)タイム指数マスター</span>',
+    'ﾀｲﾑ<br />指数M<span class="hidden">タイム指数(通常)タイム指数マスター</span>',
+    "ｽﾀｰﾄ<br />指数",
+    "追走<br />指数",
+    "上がり<br />指数",
+    ...LEGACY_HEADERS.slice(10),
+];
+
+function buildHeaderRow(layout: ResultLayout): string {
+    const headers = layout === "current" ? CURRENT_HEADERS : LEGACY_HEADERS;
+    return `<tr class="txt_c">\n${headers.map((header) => `<th nowrap="nowrap">${header}</th>`).join("\n")}\n</tr>`;
+}
+
+function buildResultRow(row: FixtureRow, layout: ResultLayout): string {
+    const origin = layout === "current" ? "https://db.netkeiba.com" : "";
+    // 現行で増えた指数系の列 値はプレミアム会員向けの「**」
+    const extraIndexCells =
+        layout === "current"
+            ? '<td nowrap="nowrap"><a href="https://example.invalid/master/">**</a></td>\n'.repeat(4)
+            : "";
     return `<tr>
 <td class="txt_r" nowrap="nowrap">${row.order}</td>
 <td class="w3ml" align="right" nowrap="nowrap"><span>${row.bracket}</span></td>
 <td class="txt_r" nowrap="nowrap">${row.horseNumber}</td>
 <td class="txt_l" nowrap="nowrap">
-<a href="/horse/${row.horseId}/" title="${row.horseName}" id="umalink_1">${row.horseName}</a>
+<a href="${origin}/horse/${row.horseId}/" title="${row.horseName}" id="umalink_1">${row.horseName}</a>
 
 </td>
 <td class="txt_c" nowrap="nowrap">${row.sexAge}</td>
 <td class="txt_c" nowrap="nowrap">${row.weight}</td>
 <td class="txt_l" nowrap="nowrap">
-<a href="/jockey/result/recent/${row.jockeyId}/" title="${row.jockeyName}">${row.jockeyName}</a>
+<a href="${origin}/jockey/result/recent/${row.jockeyId}/" title="${row.jockeyName}">${row.jockeyName}</a>
 
 </td>
 <td class="txt_r" nowrap="nowrap">${row.time}</td>
@@ -159,7 +208,7 @@ function buildResultRow(row: FixtureRow): string {
 </div>
 
 </td>
-<td nowrap="nowrap">${row.passing}</td>
+${extraIndexCells}<td nowrap="nowrap">${row.passing}</td>
 <td class="r1ml  txt_c" nowrap="nowrap"><span>${row.lastPhase}</span></td>
 </diary_snap_cut>
 <td class="txt_r" nowrap="nowrap">${row.odds}</td>
@@ -172,12 +221,12 @@ function buildResultRow(row: FixtureRow): string {
 </diary_snap_cut>
 <td class="txt_l" nowrap="nowrap">
 ${row.stable}
-<a href="/trainer/result/recent/${row.trainerId}/" title="${row.trainerName}">${row.trainerName}</a>
+<a href="${origin}/trainer/result/recent/${row.trainerId}/" title="${row.trainerName}">${row.trainerName}</a>
 
 </td>
 <diary_snap_cut>
 <td class="txt_l w3ml" nowrap="nowrap">
-<a href="/owner/result/recent/${row.ownerId}/" title="${row.ownerName}">${row.ownerName}</a>
+<a href="${origin}/owner/result/recent/${row.ownerId}/" title="${row.ownerName}">${row.ownerName}</a>
 
 </td>
 <td class="txt_r" nowrap="nowrap">${row.earning}</td>
@@ -204,6 +253,8 @@ export type RacePageOptions = {
     raceDataLines?: string;
     // 「2025年07月06日 1回札幌1日目 2歳未勝利」のような行
     dateLine?: string;
+    // 結果表の構成 省略時は旧形式
+    layout?: ResultLayout;
 };
 
 /**
@@ -220,6 +271,7 @@ export function buildRacePageHtml(options: RacePageOptions = {}): string {
         options.raceDataLines ??
         "芝右1200m&nbsp;/&nbsp;\n天候 : 曇&nbsp;/&nbsp;\n芝 : 良&nbsp;&nbsp;/&nbsp;\n発走 : 09:55";
     const dateLine = options.dateLine ?? "2025年07月06日 1回札幌1日目 2歳未勝利&nbsp;&nbsp;(混)[指](馬齢)";
+    const layout = options.layout ?? "legacy";
 
     return `<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
 <html xmlns="http://www.w3.org/1999/xhtml" lang="ja" xml:lang="ja" id="html">
@@ -257,11 +309,8 @@ ${raceDataLines}
 </div>
 <div id="contents_liquid">
 <table class="race_table_01 nk_tb_common" summary="レース結果" cellspacing="1" cellpadding="0">
-<tr class="txt_c">
-<th nowrap="nowrap">着<br />順</th>
-<th nowrap="nowrap">枠<br />番</th>
-</tr>
-${rows.map(buildResultRow).join("\n")}
+${buildHeaderRow(layout)}
+${rows.map((row) => buildResultRow(row, layout)).join("\n")}
 </table>
 </div>
 <div class="result_info box_left">

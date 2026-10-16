@@ -6,8 +6,14 @@
 import { describe, expect, test } from "bun:test";
 
 import { ParseError } from "../src/scraper/py-compat.ts";
-import { loadRaceDocument, parsePayoffs, parseRaceInfo, parseRaceResults } from "../src/scraper/race-parser.ts";
-import { buildRacePageHtml, SECOND_ROW, WINNER_ROW } from "./race-page-fixture.ts";
+import {
+    loadRaceDocument,
+    parsePayoffs,
+    parseRaceInfo,
+    parseRaceResults,
+    resolveResultColumns,
+} from "../src/scraper/race-parser.ts";
+import { buildRacePageHtml, EXCLUDED_ROW, SECOND_ROW, WINNER_ROW } from "./race-page-fixture.ts";
 
 const RACE_ID = 209901010101;
 
@@ -190,6 +196,97 @@ describe("parseRaceResults", () => {
     test("returns an empty set when there is no result table", () => {
         const resultSetEmpty = parseRaceResults(RACE_ID, loadRaceDocument("<html><body></body></html>"));
         expect(resultSetEmpty.results).toEqual([]);
+    });
+});
+
+describe("parseRaceResults with the current 25 column layout", () => {
+    const rows = [WINNER_ROW, SECOND_ROW, EXCLUDED_ROW];
+    const legacy = parseRaceResults(RACE_ID, loadRaceDocument(buildRacePageHtml({ rows })));
+    const current = parseRaceResults(RACE_ID, loadRaceDocument(buildRacePageHtml({ rows, layout: "current" })));
+
+    test("returns the same records as the legacy layout", () => {
+        expect(current).toEqual(legacy);
+    });
+
+    test("reads values by header instead of by position", () => {
+        expect(current.results[0]).toMatchObject({
+            horseNumber: 3,
+            lastPhase: 34.1,
+            odds: 4.8,
+            popularity: 3,
+            horseWeight: 408,
+            trainerId: "01002",
+            ownerId: "331002",
+            earningMoney: 1560,
+        });
+    });
+
+    test("extracts ids from absolute links", () => {
+        expect(current.horses[0]).toEqual({ id: 2099100001, horseName: "テストホースA" });
+        expect(current.jockeys[0]).toEqual({ id: "01001", jockeyName: "騎手テスト" });
+        expect(current.owners[1]).toEqual({ id: "000123", ownerName: "馬主テストB" });
+    });
+
+    test("does not take the masked index columns as the speed figure", () => {
+        expect(current.results.map((result) => result.speedFigure)).toEqual([null, null, null]);
+    });
+});
+
+describe("resolveResultColumns", () => {
+    const legacyHeaders = [
+        "着 順",
+        "枠 番",
+        "馬 番",
+        "馬名",
+        "性齢",
+        "斤量",
+        "騎手",
+        "タイム",
+        "着差",
+        "ﾀｲﾑ 指数",
+        "通過",
+        "上り",
+        "単勝",
+        "人気",
+        "馬体重",
+        "調教 ﾀｲﾑ",
+        "厩舎 ｺﾒﾝﾄ",
+        "備考",
+        "調教師",
+        "馬主",
+        "賞金 (万円)",
+    ];
+
+    test("maps each header to its column", () => {
+        const indexes = resolveResultColumns(legacyHeaders);
+        expect(indexes.get("horse")).toBe(3);
+        expect(indexes.get("speedFigure")).toBe(9);
+        expect(indexes.get("lastPhase")).toBe(11);
+        expect(indexes.get("earningMoney")).toBe(20);
+    });
+
+    test("tolerates a missing speed figure column", () => {
+        const indexes = resolveResultColumns(legacyHeaders.filter((header) => !header.startsWith("ﾀｲﾑ")));
+        expect(indexes.has("speedFigure")).toBe(false);
+        expect(indexes.get("passingRank")).toBe(9);
+    });
+
+    test("throws ParseError naming the missing required columns", () => {
+        const headers = legacyHeaders.filter((header) => header !== "単勝" && header !== "馬主");
+        expect(() => resolveResultColumns(headers)).toThrow(/odds, owner/);
+        expect(() => resolveResultColumns(headers)).toThrow(ParseError);
+    });
+});
+
+describe("parseRaceResults structure checks", () => {
+    test("throws ParseError when a row has a different number of columns than the header", () => {
+        const html = buildRacePageHtml({ rows: [WINNER_ROW] }).replace('<td nowrap="nowrap">6-5</td>', "");
+        expect(() => parseRaceResults(RACE_ID, loadRaceDocument(html))).toThrow(/columns/);
+    });
+
+    test("throws ParseError when a required header is renamed", () => {
+        const html = buildRacePageHtml({ rows: [WINNER_ROW] }).replace(">単勝<", ">オッズ<");
+        expect(() => parseRaceResults(RACE_ID, loadRaceDocument(html))).toThrow(/odds/);
     });
 });
 
