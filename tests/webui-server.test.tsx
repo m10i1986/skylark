@@ -3,7 +3,10 @@
 // This software is released under the MIT License.
 //
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 import type { RaceInfoRecord } from "../src/db/schema.ts";
 import type {
@@ -14,6 +17,7 @@ import type {
     RaceListItem,
 } from "../src/webui/netkeiba-client.ts";
 import { createApp, type WebUiDependencies } from "../src/webui/server.tsx";
+import { selectionPath } from "../src/webui/views.tsx";
 import { createRecordingLogger } from "./mock-fetch.ts";
 
 const HORSE: HorseEntry = {
@@ -92,7 +96,7 @@ type Harness = {
     };
 };
 
-function createHarness(): Harness {
+function createHarness(assetsDirectory?: string): Harness {
     const saved: RaceInfoRecord[] = [];
     const savedIds = new Set<number>();
     const calls: Harness["calls"] = { dates: 0, lists: [], information: [] };
@@ -135,6 +139,7 @@ function createHarness(): Harness {
             saved.push(record);
             savedIds.add(record.id);
         },
+        assetsDirectory,
     };
     return { app: createApp(dependencies), saved, savedIds, calls, logger, behavior };
 }
@@ -197,6 +202,27 @@ describe("GET /", () => {
         expect(csp).toContain("default-src 'none'");
         expect(csp).toContain("frame-ancestors 'none'");
         expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    });
+
+    test("allows scripts and styles only from the same origin", async () => {
+        const response = await harness.app.request("/", { headers: { host: "localhost" } });
+        const csp = response.headers.get("content-security-policy") ?? "";
+        expect(csp).toContain("script-src 'self'");
+        expect(csp).not.toMatch(/script-src[^;]*'unsafe-/);
+        expect(csp).toContain("style-src 'self'");
+    });
+
+    test("links the client assets and hands the page values to the client as JSON", async () => {
+        const html = await (await harness.app.request("/", { headers: { host: "localhost" } })).text();
+        expect(html).toContain('href="/assets/app.css"');
+        expect(html).toContain('src="/assets/app.js"');
+        const match = /<script id="skylark-props" type="application\/json">(.*?)<\/script>/s.exec(html);
+        expect(match).not.toBeNull();
+        const props = JSON.parse(match?.[1] ?? "null");
+        expect(props.dateIndex).toBe(0);
+        // サイト由来の値に「<」があっても script 要素を閉じられない 値は元のまま復元できる
+        expect(match?.[1]).not.toContain("<");
+        expect(props.detail.race.raceName).toBe("テスト未勝利<script>alert(1)</script>");
     });
 
     test("rejects unexpected Host headers", async () => {
@@ -330,5 +356,63 @@ describe("POST /save", () => {
         await view();
         const response = await postSave(harness, { raceId: "209901010101" }, { ...FORM_HEADERS, host: "evil.example" });
         expect(response.status).toBe(403);
+    });
+});
+
+describe("GET /assets/:name", () => {
+    let assetsDirectory: string;
+
+    beforeEach(async () => {
+        assetsDirectory = await mkdtemp(path.join(tmpdir(), "skylark-assets-"));
+        await writeFile(path.join(assetsDirectory, "app.js"), "console.log(1);");
+        await writeFile(path.join(assetsDirectory, "app.css"), "body{margin:0}");
+        await writeFile(path.join(assetsDirectory, "secret.txt"), "secret");
+        harness = createHarness(assetsDirectory);
+    });
+
+    afterEach(async () => {
+        await rm(assetsDirectory, { recursive: true, force: true });
+    });
+
+    test("serves the script and the stylesheet with their content types", async () => {
+        const script = await harness.app.request("/assets/app.js", { headers: { host: "localhost" } });
+        expect(script.status).toBe(200);
+        expect(script.headers.get("content-type")).toContain("text/javascript");
+        expect(await script.text()).toBe("console.log(1);");
+
+        const style = await harness.app.request("/assets/app.css", { headers: { host: "localhost" } });
+        expect(style.status).toBe(200);
+        expect(style.headers.get("content-type")).toContain("text/css");
+        expect(await style.text()).toBe("body{margin:0}");
+    });
+
+    test("serves only the known file names", async () => {
+        for (const name of ["secret.txt", "..%2Fsecret.txt", "..%2F..%2Fetc%2Fpasswd", "constructor", "__proto__"]) {
+            const response = await harness.app.request(`/assets/${name}`, { headers: { host: "localhost" } });
+            expect(response.status).toBe(404);
+        }
+    });
+
+    test("answers 404 and logs when the client has not been built", async () => {
+        await rm(path.join(assetsDirectory, "app.js"));
+        const response = await harness.app.request("/assets/app.js", { headers: { host: "localhost" } });
+        expect(response.status).toBe(404);
+        expect(harness.logger.ofLevel("error")[0]).toContain("build:webui");
+    });
+
+    test("checks the Host header like the pages", async () => {
+        const response = await harness.app.request("/assets/app.js", { headers: { host: "evil.example" } });
+        expect(response.status).toBe(403);
+    });
+});
+
+describe("selectionPath", () => {
+    test("drops the race number so that a new date starts at its first race", () => {
+        expect(selectionPath(2)).toBe("/?date=2");
+    });
+
+    test("keeps both numbers when the race is chosen", () => {
+        expect(selectionPath(2, 5)).toBe("/?date=2&race=5");
+        expect(selectionPath(0, 0)).toBe("/?date=0&race=0");
     });
 });

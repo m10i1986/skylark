@@ -3,6 +3,8 @@
 // This software is released under the MIT License.
 //
 
+import { resolve } from "node:path";
+
 import { Hono } from "hono";
 import { csrf } from "hono/csrf";
 import { secureHeaders } from "hono/secure-headers";
@@ -12,6 +14,7 @@ import { createDatabase, runMigrations } from "../db/client.ts";
 import { SkylarkCrud } from "../db/crud.ts";
 import type { RaceInfoRecord } from "../db/schema.ts";
 import { createLogger, describeError, type Logger } from "../logger.ts";
+import { renderDocument } from "./document.tsx";
 import {
     createNetkeibaClient,
     type NetkeibaClient,
@@ -20,7 +23,7 @@ import {
     type RaceListItem,
 } from "./netkeiba-client.ts";
 import { createTtlCache } from "./ttl-cache.ts";
-import { IndexPage, type Notice, type RaceDetail } from "./views.tsx";
+import type { Notice, RaceDetail } from "./views.tsx";
 
 // 取得結果を使い回す時間 元のStreamlit版がセッション中は再取得しなかったことに合わせる
 const CACHE_TTL_MS = 15 * 60 * 1000;
@@ -30,6 +33,13 @@ const DEFAULT_PORT = 8501;
 
 const LOOPBACK_HOSTNAMES: ReadonlySet<string> = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
 const RACE_ID_PATTERN = /^\d{1,18}$/;
+
+// 配信するクライアントのファイル 名前を固定し 任意のパスを読ませない(scripts/build-webui.tsが作る)
+const ASSET_CONTENT_TYPES: Readonly<Record<string, string>> = {
+    "app.js": "text/javascript; charset=utf-8",
+    "app.css": "text/css; charset=utf-8",
+};
+const DEFAULT_ASSETS_DIRECTORY = resolve(import.meta.dir, "../../dist/webui");
 
 // 画面に出す通知は固定の種類だけをクエリで受け取る(任意の文字列を表示しない)
 const NOTICES = {
@@ -56,6 +66,8 @@ export type WebUiDependencies = {
     today: () => string;
     // Hostヘッダーのホスト名を許可するか DNSリバインディング対策
     isHostAllowed: (hostname: string) => boolean;
+    // 作成済みのクライアント(JSとCSS)を置いたディレクトリ 省略時は dist/webui
+    assetsDirectory?: string;
 };
 
 // 「0」以上で件数未満の整数だけを受け付け それ以外は先頭を選ぶ
@@ -104,7 +116,10 @@ export function createApp(dependencies: WebUiDependencies): Hono {
         secureHeaders({
             contentSecurityPolicy: {
                 defaultSrc: ["'none'"],
-                styleSrc: ["'unsafe-inline'"],
+                // スクリプトとCSSは同じオリジンの/assets/だけ
+                scriptSrc: ["'self'"],
+                // 'unsafe-inline'はRadixが出す style属性のため(従来の方針と同じ)
+                styleSrc: ["'self'", "'unsafe-inline'"],
                 formAction: ["'self'"],
                 frameAncestors: ["'none'"],
                 baseUri: ["'none'"],
@@ -121,6 +136,22 @@ export function createApp(dependencies: WebUiDependencies): Hono {
 
     // フォームの送信元(Origin)が同じオリジンであることを確かめる
     app.use(csrf());
+
+    const assetsDirectory = dependencies.assetsDirectory ?? DEFAULT_ASSETS_DIRECTORY;
+    app.get("/assets/:name", async (c) => {
+        const name = c.req.param("name");
+        const contentType = Object.hasOwn(ASSET_CONTENT_TYPES, name) ? ASSET_CONTENT_TYPES[name] : undefined;
+        if (contentType == null) {
+            return c.notFound();
+        }
+        const file = Bun.file(resolve(assetsDirectory, name));
+        if (!(await file.exists())) {
+            logger.error(`web UI asset not found: ${name} (run "pnpm build:webui")`);
+            return c.text("Not Found", 404);
+        }
+        // 作り直したファイルをすぐ使えるよう 毎回確認させる
+        return new Response(file, { headers: { "content-type": contentType, "cache-control": "no-cache" } });
+    });
 
     app.get("/", async (c) => {
         const noticeQuery = c.req.query("n");
@@ -166,17 +197,7 @@ export function createApp(dependencies: WebUiDependencies): Hono {
             }
         }
 
-        return c.html(
-            <IndexPage
-                dates={dates}
-                dateIndex={dateIndex}
-                races={races}
-                raceIndex={raceIndex}
-                selectedRaceText={selectedRaceText}
-                detail={detail}
-                notice={notice}
-            />,
-        );
+        return c.html(renderDocument({ dates, dateIndex, races, raceIndex, selectedRaceText, detail, notice }));
     });
 
     // 表示用の詳細を作り 保管できる場合は保管用のレコードを覚えておく

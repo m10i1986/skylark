@@ -1,3 +1,11 @@
 # drizzle-kit が依存する esbuild だけビルドスクリプトを許可する
 allowBuilds:
     esbuild: true
+
+# bun-plugin-tailwind は peer 依存に npm の bun を挙げるが 実行環境の Bun を使う
+# npm の bun が入ると node_modules/.bin/bun が本物の Bun より先に呼ばれ 動かなくなる
+packageExtensions:
+    bun-plugin-tailwind:
+        peerDependenciesMeta:
+            bun:
+                optional: true

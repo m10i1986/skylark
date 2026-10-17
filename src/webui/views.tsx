@@ -3,67 +3,92 @@
 // This software is released under the MIT License.
 //
 
-import type { FC } from "hono/jsx";
+import { CircleAlertIcon, CircleCheckIcon, InfoIcon } from "lucide-react";
+import { type ReactNode, useId, useState } from "react";
 
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import type { HorseEntry, RaceDate, RaceInfoDraft, RaceListItem } from "./netkeiba-client.ts";
 
-// JSXは文字列を自動でエスケープするため サイト由来の値をそのまま埋め込んでも注入されない
-const STYLE = `
-body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 1100px; padding: 0 1rem; color: #222; }
-h1 { font-size: 1.6rem; } h2 { font-size: 1.2rem; margin-top: 2rem; }
-label { display: block; margin: 0.8rem 0 0.2rem; font-weight: 600; }
-select { min-width: 22rem; max-width: 100%; padding: 0.3rem; }
-table { border-collapse: collapse; margin: 0.8rem 0; }
-th, td { border: 1px solid #ccc; padding: 0.3rem 0.6rem; text-align: left; }
-th { background: #f4f4f4; white-space: nowrap; }
-.race-name { font-size: 2em; font-weight: 700; margin: 1rem 0 0.5rem; }
-.notice { padding: 0.6rem 0.8rem; border-radius: 4px; margin: 1rem 0; }
-.notice.info { background: #e8f1ff; } .notice.error { background: #ffe8e8; } .notice.ok { background: #e6f6e6; }
-button { padding: 0.4rem 1rem; }
-.scroll { overflow-x: auto; }
-`;
-
-export const Layout: FC = ({ children }) => (
-    <html lang="ja">
-        <head>
-            <meta charset="utf-8" />
-            <meta name="viewport" content="width=device-width, initial-scale=1" />
-            <title>Skylark</title>
-            <style>{STYLE}</style>
-        </head>
-        <body>
-            <h1>Skylark: netkeiba.com レース情報</h1>
-            {children}
-        </body>
-    </html>
-);
+// Reactは文字列を自動でエスケープするため サイト由来の値をそのまま埋め込んでも注入されない
 
 /** 画面に出す通知 */
 export type Notice = { kind: "info" | "error" | "ok"; text: string };
 
-export const NoticeBox: FC<{ notice: Notice }> = ({ notice }) => (
-    <div class={`notice ${notice.kind}`}>{notice.text}</div>
-);
+const NOTICE_ICONS: Record<Notice["kind"], ReactNode> = {
+    info: <InfoIcon />,
+    ok: <CircleCheckIcon />,
+    error: <CircleAlertIcon />,
+};
 
-type SelectProps = {
+export function NoticeBox({ notice }: { notice: Notice }): ReactNode {
+    return (
+        <Alert
+            variant={notice.kind === "error" ? "destructive" : "default"}
+            role={notice.kind === "error" ? "alert" : "status"}
+        >
+            {NOTICE_ICONS[notice.kind]}
+            <AlertDescription className="text-current">{notice.text}</AlertDescription>
+        </Alert>
+    );
+}
+
+/**
+ * 開催日とレースの番号から画面のパスを作る
+ *
+ * レースを省略すると 先頭のレースを表示する(開催日を変えたとき 前の開催日のレース番号を持ち越さない)
+ */
+export function selectionPath(dateIndex: number, raceIndex?: number): string {
+    const params = new URLSearchParams({ date: String(dateIndex) });
+    if (raceIndex != null) {
+        params.set("race", String(raceIndex));
+    }
+    return `/?${params.toString()}`;
+}
+
+type SelectFieldProps = {
     name: string;
     label: string;
     options: string[];
     selected: number;
+    // 選択が変わったときに呼ぶ(選んだ選択肢の番号)
+    onSelect: (index: number) => void;
 };
 
-const Select: FC<SelectProps> = ({ name, label, options, selected }) => (
-    <>
-        <label for={name}>{label}</label>
-        <select id={name} name={name}>
-            {options.map((text, index) => (
-                <option value={String(index)} selected={index === selected}>
-                    {text}
-                </option>
-            ))}
-        </select>
-    </>
-);
+// 選択肢を並べた選択欄 フォームの送信にはRadixが隠しselectを出す
+// 表示する文字は自前で決める(サーバー側の描画では選択肢の一覧が無く Radixが文字を出せないため)
+function SelectField({ name, label, options, selected, onSelect }: SelectFieldProps): ReactNode {
+    const id = useId();
+    const [value, setValue] = useState(String(selected));
+    const handleValueChange = (next: string): void => {
+        setValue(next);
+        onSelect(Number(next));
+    };
+
+    return (
+        <div className="grid w-full gap-2 sm:w-80">
+            <Label htmlFor={id}>{label}</Label>
+            <Select name={name} value={value} onValueChange={handleValueChange}>
+                <SelectTrigger id={id} className="w-full">
+                    <SelectValue>{options[Number(value)] ?? ""}</SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                    {options.map((text, index) => (
+                        // biome-ignore lint/suspicious/noArrayIndexKey: 選択肢は表示順の番号で識別する(同じ文言が並び得る)
+                        <SelectItem key={index} value={String(index)}>
+                            {text}
+                        </SelectItem>
+                    ))}
+                </SelectContent>
+            </Select>
+        </div>
+    );
+}
 
 /** 画面に出すレース情報の表の行(表示名と値) */
 export function buildRaceInfoRows(
@@ -115,6 +140,7 @@ export type RaceDetail = {
     unsavableReason: string | null;
 };
 
+/** 画面の描画に必要な値 JSONにできる値だけを持つ(クライアントへそのまま渡す) */
 export type PageProps = {
     dates: RaceDate[];
     dateIndex: number;
@@ -125,78 +151,125 @@ export type PageProps = {
     notice: Notice | null;
 };
 
-export const IndexPage: FC<PageProps> = (props) => {
+function RaceDetailView({ detail, heading }: { detail: RaceDetail; heading: string }): ReactNode {
+    return (
+        <>
+            <Card>
+                <CardHeader>
+                    <p className="text-sm text-muted-foreground">{heading}</p>
+                    <CardTitle className="text-2xl">{detail.race.raceName ?? ""}</CardTitle>
+                </CardHeader>
+                <CardContent>
+                    <Table>
+                        <TableBody>
+                            {buildRaceInfoRows(detail.race, detail.kaisaiDate).map(([label, value]) => (
+                                <TableRow key={label}>
+                                    <TableHead scope="row" className="w-40">
+                                        {label}
+                                    </TableHead>
+                                    <TableCell>{value}</TableCell>
+                                </TableRow>
+                            ))}
+                        </TableBody>
+                    </Table>
+                </CardContent>
+            </Card>
+
+            <Card>
+                <CardHeader>
+                    <CardTitle>出走馬情報</CardTitle>
+                </CardHeader>
+                <CardContent>
+                    <Table>
+                        <TableHeader>
+                            <TableRow>
+                                {HORSE_COLUMNS.map(([label]) => (
+                                    <TableHead key={label} className="whitespace-nowrap">
+                                        {label}
+                                    </TableHead>
+                                ))}
+                            </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                            {detail.horses.map((horse, index) => (
+                                // biome-ignore lint/suspicious/noArrayIndexKey: 馬の識別子は欠けることがあり 表は並べ替えない
+                                <TableRow key={index}>
+                                    {HORSE_COLUMNS.map(([label, value]) => (
+                                        <TableCell key={label}>{value(horse) ?? ""}</TableCell>
+                                    ))}
+                                </TableRow>
+                            ))}
+                        </TableBody>
+                    </Table>
+                </CardContent>
+            </Card>
+        </>
+    );
+}
+
+export function IndexPage(props: PageProps): ReactNode {
     const { dates, dateIndex, races, raceIndex, selectedRaceText, detail, notice } = props;
     const selectedDate = dates[dateIndex];
 
     return (
-        <Layout>
-            {notice != null && <NoticeBox notice={notice} />}
-            <h2>開催日を選択</h2>
-            <form method="get" action="/">
-                <Select name="date" label="開催日" options={dates.map((date) => date.text)} selected={dateIndex} />
-                {races != null && races.length > 0 && (
-                    <Select name="race" label="レース" options={races.map((race) => race.text)} selected={raceIndex} />
-                )}
-                <p>
-                    <button type="submit">表示</button>
-                </p>
-            </form>
+        <main className="mx-auto flex max-w-6xl flex-col gap-6 p-4 sm:p-8">
+            <h1 className="text-2xl font-semibold tracking-tight">Skylark: netkeiba.com レース情報</h1>
 
-            {selectedDate != null && <h2>{`${selectedDate.kaisaiDate ?? selectedDate.text} のレース一覧`}</h2>}
+            {notice != null && <NoticeBox notice={notice} />}
+
+            <Card>
+                <CardHeader>
+                    <CardTitle>開催日を選択</CardTitle>
+                </CardHeader>
+                <CardContent>
+                    <form method="get" action="/" className="flex flex-wrap items-end gap-4">
+                        <SelectField
+                            name="date"
+                            label="開催日"
+                            options={dates.map((date) => date.text)}
+                            selected={dateIndex}
+                            // 開催日を変えたら すぐにその日のレース一覧へ切り替える
+                            onSelect={(index) => window.location.assign(selectionPath(index))}
+                        />
+                        {races != null && races.length > 0 && (
+                            <SelectField
+                                name="race"
+                                label="レース"
+                                options={races.map((race) => race.text)}
+                                selected={raceIndex}
+                                onSelect={(index) => window.location.assign(selectionPath(dateIndex, index))}
+                            />
+                        )}
+                        <Button type="submit">表示</Button>
+                    </form>
+                </CardContent>
+            </Card>
+
+            {selectedDate != null && (
+                <h2 className="text-lg font-semibold">{`${selectedDate.kaisaiDate ?? selectedDate.text} のレース一覧`}</h2>
+            )}
             {races != null && races.length === 0 && (
                 <NoticeBox notice={{ kind: "info", text: "レースが見つかりませんでした。" }} />
             )}
 
             {detail != null && (
                 <>
-                    <h2>{`レース情報: ${selectedRaceText ?? ""}`}</h2>
-                    <div class="race-name">{detail.race.raceName ?? ""}</div>
-                    <table>
-                        <tbody>
-                            {buildRaceInfoRows(detail.race, detail.kaisaiDate).map(([label, value]) => (
-                                <tr>
-                                    <th>{label}</th>
-                                    <td>{value}</td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
+                    <RaceDetailView detail={detail} heading={`レース情報: ${selectedRaceText ?? ""}`} />
 
-                    <h2>出走馬情報</h2>
-                    <div class="scroll">
-                        <table>
-                            <thead>
-                                <tr>
-                                    {HORSE_COLUMNS.map(([label]) => (
-                                        <th>{label}</th>
-                                    ))}
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {detail.horses.map((horse) => (
-                                    <tr>
-                                        {HORSE_COLUMNS.map(([, value]) => (
-                                            <td>{value(horse) ?? ""}</td>
-                                        ))}
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    </div>
-
-                    <form method="post" action="/save">
+                    <form method="post" action="/save" className="flex flex-wrap items-center gap-3">
                         <input type="hidden" name="date" value={String(dateIndex)} />
                         <input type="hidden" name="race" value={String(raceIndex)} />
                         <input type="hidden" name="raceId" value={String(detail.raceId)} />
-                        <button type="submit" disabled={detail.isSaved || detail.unsavableReason != null}>
+                        <Button type="submit" disabled={detail.isSaved || detail.unsavableReason != null}>
                             レース情報をDB保管
-                        </button>
-                        {detail.isSaved && <span> 保管済みです</span>}
-                        {detail.unsavableReason != null && <span>{` ${detail.unsavableReason}`}</span>}
+                        </Button>
+                        {detail.isSaved && <Badge variant="secondary">保管済みです</Badge>}
+                        {detail.unsavableReason != null && (
+                            <span className="text-sm text-muted-foreground">{detail.unsavableReason}</span>
+                        )}
                     </form>
                 </>
             )}
-        </Layout>
+        </main>
     );
-};
+}

@@ -56,10 +56,11 @@ bun run src/cli.ts -U -S -F
 bun run src/cli.ts -S 202501010101 202501010102
 
 # Web UI(既定は http://127.0.0.1:8501/)
-bun run webui
+# 画面のJSとCSSを dist/webui へ作ってから起動する
+pnpm webui
 ```
 
-`scraper.sh` と `webui.sh` は、それぞれ上の `cli.ts` と Web UI を起動するだけの短いスクリプトです。
+`scraper.sh` と `webui.sh` は、それぞれ上の `cli.ts` と Web UI を起動するだけの短いスクリプトです。`webui.sh` も、起動前に画面のJSとCSSを作ります。
 
 ### コマンドラインオプション
 
@@ -91,9 +92,26 @@ bun run webui
 | `src/db/` | スキーマ(`schema.ts`)、リポジトリ(`crud.ts`)、接続とマイグレーション(`client.ts`) |
 | `src/scraper/` | ダウンロード、HTML の解析、レース一覧の作成 |
 | `src/feature.ts` | 特徴量の計算 |
-| `src/webui/` | Web UI(Hono + Playwright) |
+| `src/webui/` | Web UI(Hono + Playwright。画面は React + [shadcn/ui](https://ui.shadcn.com/)) |
+| `scripts/build-webui.ts` | 画面のJSとCSS(Tailwind CSS)を `dist/webui` へ作る(`pnpm build:webui`) |
 | `drizzle/` | マイグレーション SQL(自動生成) |
 | `tests/` | テスト |
+
+### Web UI の画面
+
+画面はサーバーで描画し(React の `renderToString`)、ブラウザ側のスクリプト(`src/webui/client.tsx`)が同じ値で引き継ぎます。選択欄などの操作はこの引き継ぎ後に動きます。
+
+- `src/webui/views.tsx`: 画面の部品。サーバーとブラウザの両方で使います。
+- `src/webui/components/ui/`: shadcn/ui の部品。設定は `components.json`、テーマは `src/webui/styles.css` です。
+- ダーク/ライトは OS の設定(`prefers-color-scheme`)に従います。
+
+部品を足すときは、次のコマンドを使います。
+
+```bash
+pnpm exec shadcn add <部品名>
+```
+
+追加後は `pnpm exec biome check --write src/webui` で整形してください。
 
 テーブル定義を変えたら、次のコマンドでマイグレーションを生成します。起動時に未適用分が自動で適用されます。
 
