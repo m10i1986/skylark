@@ -327,6 +327,36 @@ describe("parsePayoffs", () => {
         expect(() => parsePayoffs(RACE_ID, loadRaceDocument(html), () => {})).toThrow(ParseError);
     });
 
+    test("skips refund rows of a cancelled race that have no horse numbers and no popularity", () => {
+        const html = buildRacePageHtml({
+            payoffRows: [
+                { label: "単勝", horseNumbers: "", payoff: "100", popularity: "" },
+                { label: "複勝", horseNumbers: "", payoff: "100", popularity: "" },
+                { label: "三連単", horseNumbers: "\n  ", payoff: "100", popularity: "\n  " },
+            ],
+        });
+        expect(parsePayoffs(RACE_ID, loadRaceDocument(html), () => {})).toEqual([]);
+    });
+
+    test("keeps valid rows next to a refund row", () => {
+        const html = buildRacePageHtml({
+            payoffRows: [
+                { label: "単勝", horseNumbers: "", payoff: "100", popularity: "" },
+                { label: "複勝", horseNumbers: "3", payoff: "130", popularity: "2" },
+            ],
+        });
+        expect(parsePayoffs(RACE_ID, loadRaceDocument(html), () => {})).toEqual([
+            { raceId: RACE_ID, ticketType: 1, horseNumbers: "3", payoff: 130, popularity: 2 },
+        ]);
+    });
+
+    test("throws ParseError when only the popularity is missing", () => {
+        const html = buildRacePageHtml({
+            payoffRows: [{ label: "単勝", horseNumbers: "3", payoff: "480", popularity: "" }],
+        });
+        expect(() => parsePayoffs(RACE_ID, loadRaceDocument(html), () => {})).toThrow(/popularity/);
+    });
+
     test("accepts self closing and upper case br tags", () => {
         const html = buildRacePageHtml({
             payoffRows: [{ label: "複勝", horseNumbers: "3<BR/>4", payoff: "130<br>110", popularity: "2<br />1" }],

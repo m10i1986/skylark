@@ -359,6 +359,7 @@ export function parseRaceResults(raceId: number, $: CheerioAPI): RaceResultSet {
  * 払戻表から券種ごとの払戻を抽出する
  *
  * 複勝やワイドのように1つのセルへ複数の払戻が改行(br)で並ぶ場合は行ごとに展開する
+ * 中止で全額返還となったレースは馬番と人気が空のまま払戻だけが100円で並ぶ 組み合わせを特定できないためその行は読み飛ばす
  *
  * @param raceId - レースID
  * @param $ - レース結果ページのDOM
@@ -387,12 +388,17 @@ export function parsePayoffs(
         const popularityList = (columns.eq(2).html() ?? "None").split(BREAK_PATTERN);
 
         horseNumbersList.forEach((horseNumbers, index) => {
+            const popularityText = popularityList[index] ?? "";
+            // 馬番と人気が両方とも空の行だけを返還の行とみなす 馬番があって人気だけ欠ける場合は構造の変化として例外にする
+            if (pyStrip(horseNumbers) === "" && pyStrip(popularityText) === "") {
+                return;
+            }
             payoffs.push({
                 raceId,
                 ticketType,
                 horseNumbers: horseNumbers.replaceAll(" ", "").replaceAll("→", "->"),
                 payoff: requirePyInt((payoffList[index] ?? "").replaceAll(",", ""), "payoff"),
-                popularity: requirePyInt(popularityList[index] ?? "", "popularity"),
+                popularity: requirePyInt(popularityText, "popularity"),
             });
         });
     }
