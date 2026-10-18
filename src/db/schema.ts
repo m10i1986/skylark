@@ -5,6 +5,7 @@
 
 import {
     bigint,
+    boolean,
     date,
     doublePrecision,
     index,
@@ -14,6 +15,7 @@ import {
     primaryKey,
     text,
     time,
+    timestamp,
     varchar,
 } from "drizzle-orm/pg-core";
 
@@ -140,6 +142,59 @@ export const featureTable = pgTable(
     (table) => [primaryKey({ columns: [table.horseId, table.raceId] })],
 );
 
+/** 予測モデル 係数と評価指標はjsonbで保持する 学習のたびに行が増え 最新の行を使う */
+export const predictionModelTable = pgTable("prediction_model_tbl", {
+    id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+    // 学習の対象とした競馬の区分(jra=中央)
+    circuit: varchar("circuit", { length: 8 }).notNull(),
+    // 学習・検証・テスト期間の開始日と、データの最終日
+    trainFrom: date("train_from", { mode: "string" }).notNull(),
+    validFrom: date("valid_from", { mode: "string" }).notNull(),
+    testFrom: date("test_from", { mode: "string" }).notNull(),
+    dataTo: date("data_to", { mode: "string" }).notNull(),
+    parametersJson: jsonb("parameters_json").notNull(),
+    metricsJson: jsonb("metrics_json").notNull(),
+});
+
+/**
+ * 予測 1回の実行(オッズの取得時刻)ごとのスナップショット
+ *
+ * 当日のレースはレース情報の保管前に予測するため レース情報や馬への外部キーは持たない
+ * 取得時のオッズは後から復元できないため この表の値を残す
+ */
+export const predictionTable = pgTable(
+    "prediction_tbl",
+    {
+        modelId: integer("model_id")
+            .notNull()
+            .references(() => predictionModelTable.id),
+        raceId: bigint("race_id", { mode: "number" }).notNull(),
+        horseNumber: integer("horse_number").notNull(),
+        // オッズを取得した時刻
+        capturedAt: timestamp("captured_at", { withTimezone: true, mode: "date" }).notNull(),
+        raceDate: date("race_date", { mode: "string" }).notNull(),
+        raceName: varchar("race_name", { length: 256 }).notNull(),
+        horseId: bigint("horse_id", { mode: "number" }),
+        horseName: varchar("horse_name", { length: 256 }),
+        odds: doublePrecision("odds").notNull(),
+        popularity: integer("popularity"),
+        // 控除率を除いたレース内の市場の勝率
+        marketProbability: doublePrecision("market_probability").notNull(),
+        // モデルが見積もった勝率
+        modelProbability: doublePrecision("model_probability").notNull(),
+        // レース内でのモデル勝率の順位(1が最上位)
+        modelRank: integer("model_rank").notNull(),
+        // 単勝100円あたりの期待払戻倍率(モデル勝率 x オッズ) 1を超えると市場より割安
+        expectedValue: doublePrecision("expected_value").notNull(),
+        isValuePick: boolean("is_value_pick").notNull(),
+    },
+    (table) => [
+        primaryKey({ columns: [table.raceId, table.horseNumber, table.capturedAt] }),
+        index("idx_prediction_race_date").on(table.raceDate),
+    ],
+);
+
 export type RaceInfoRecord = typeof raceInfoTable.$inferInsert;
 export type HorseRecord = typeof horseTable.$inferInsert;
 export type JockeyRecord = typeof jockeyTable.$inferInsert;
@@ -148,8 +203,15 @@ export type OwnerRecord = typeof ownerTable.$inferInsert;
 export type RaceResultRecord = typeof raceResultTable.$inferInsert;
 export type PayoffRecord = typeof payoffTable.$inferInsert;
 export type FeatureRecord = typeof featureTable.$inferInsert;
+export type PredictionModelRecord = typeof predictionModelTable.$inferSelect;
+export type PredictionRecord = typeof predictionTable.$inferInsert;
 
-/** 全テーブル名 外部キーの依存が浅い順 */
+/**
+ * スクレイピング結果の全テーブル名 外部キーの依存が浅い順
+ *
+ * 予測モデルと予測(prediction_model_tbl, prediction_tbl)は含めない
+ * 予測は取得時のオッズを残した記録で 再スクレイピングでは復元できないため --rebuild-all-tables の対象にしない
+ */
 export const ALL_TABLE_NAMES = [
     "race_info_tbl",
     "horse_tbl",

@@ -8,6 +8,13 @@
       "when": 1792161492950,
       "tag": "0000_init",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1792280711350,
+      "tag": "0001_add_prediction_tables",
+      "breakpoints": true
     }
   ]
 }
