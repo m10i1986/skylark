@@ -5,7 +5,7 @@
 
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 
-import { createLogger, describeError } from "../src/logger.ts";
+import { createLogger, createLoggerWithSink, describeError } from "../src/logger.ts";
 
 describe("describeError", () => {
     test("includes the cause chain that ORMs hide", () => {
@@ -63,5 +63,25 @@ describe("createLogger", () => {
     test("debug level shows everything", () => {
         createLogger("debug").debug("visible");
         expect(written[0]).toContain("[DEBUG] visible");
+    });
+});
+
+describe("createLoggerWithSink", () => {
+    test("hands each entry to the sink without a trailing newline and without touching stderr", () => {
+        const spy = spyOn(process.stderr, "write").mockImplementation(() => true);
+        try {
+            const lines: string[] = [];
+            const logger = createLoggerWithSink("info", (line) => lines.push(line));
+            logger.debug("hidden");
+            logger.info("shown");
+            logger.error("bad", new Error("why"));
+            expect(lines).toHaveLength(2);
+            expect(lines[0]).toMatch(/^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}\]\[INFO\] shown$/);
+            expect(lines[1]).toContain("[ERROR] bad");
+            expect(lines[1]).toContain("why");
+            expect(spy).not.toHaveBeenCalled();
+        } finally {
+            spy.mockRestore();
+        }
     });
 });

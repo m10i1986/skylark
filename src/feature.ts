@@ -134,6 +134,8 @@ export type BuildFeaturesOptions = {
     batchSize?: number;
     // 進捗表示を出すか 省略時は出す
     isProgressVisible?: boolean;
+    // 指定すると進捗を標準エラー出力ではなくここへ1行ずつ渡す
+    writeProgressLine?: (line: string) => void;
     logger: Logger;
 };
 
@@ -156,7 +158,9 @@ export async function buildFeatures(crud: SkylarkCrud, options: BuildFeaturesOpt
     const batchSize = options.batchSize ?? UPSERT_BATCH_SIZE;
     logger.info("Start feature");
     const progress =
-        options.isProgressVisible === false ? SILENT_PROGRESS : createProgressReporter(targets.length, "feature");
+        options.isProgressVisible === false
+            ? SILENT_PROGRESS
+            : createProgressReporter(targets.length, "feature", { writeLine: options.writeProgressLine });
     let pending: FeatureRecord[] = [];
 
     const flush = async (): Promise<void> => {

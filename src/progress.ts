@@ -21,6 +21,12 @@ export type ProgressReporter = {
     finish(): void;
 };
 
+/** 進捗表示の設定 */
+export type ProgressOptions = {
+    // 指定すると端末の表示を使わず 10%ごとの1行をここへ渡す(Web UIのジョブなど 標準エラー出力へ出せない場合)
+    writeLine?: (line: string) => void;
+};
+
 /**
  * 進捗表示を作る
  *
@@ -28,11 +34,12 @@ export type ProgressReporter = {
  *
  * @param total - 全体の件数
  * @param label - 表示の先頭に付ける名前
+ * @param options - 書き出し先の設定
  * @returns 進捗表示
  */
-export function createProgressReporter(total: number, label: string): ProgressReporter {
+export function createProgressReporter(total: number, label: string, options: ProgressOptions = {}): ProgressReporter {
     const startedAt = Date.now();
-    const isTerminal = process.stderr.isTTY === true;
+    const isTerminal = options.writeLine == null && process.stderr.isTTY === true;
     let done = 0;
     let lastRenderedAt = 0;
     let lastDecile = -1;
@@ -57,7 +64,12 @@ export function createProgressReporter(total: number, label: string): ProgressRe
         const decile = Math.floor(ratio * 10);
         if (isFinal || decile > lastDecile) {
             lastDecile = decile;
-            process.stderr.write(`${label} ${percent}% ${done}/${total}\n`);
+            const line = `${label} ${percent}% ${done}/${total}`;
+            if (options.writeLine != null) {
+                options.writeLine(line);
+            } else {
+                process.stderr.write(`${line}\n`);
+            }
         }
     };
 

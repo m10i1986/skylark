@@ -36,6 +36,15 @@ export type CliArguments = {
 /** 学習と予測で履歴に使う最初の開催日の既定値 DBの2016年分は2017〜2024年と離れているため使わない */
 export const DEFAULT_HISTORY_SINCE = "2025-01-01";
 
+/** HTMLキャッシュを置くディレクトリの既定値 */
+export const DEFAULT_TEMP_DIRECTORY = "./temp";
+
+/** レース一覧のファイル名の既定値 */
+export const DEFAULT_RACE_LIST_FILE = "race_list.txt";
+
+/** 一覧を遡る月数の既定値 */
+export const DEFAULT_PERIOD_OF_MONTHS = 12;
+
 /** コマンドライン引数が不正であることを表す */
 export class CliUsageError extends Error {
     constructor(message: string) {
@@ -174,9 +183,9 @@ function parseWithSchema(args: string[]) {
         allowPositionals: true,
         strict: true,
         options: {
-            temp: { type: "string", default: "./temp" },
-            "race-list-file": { type: "string", default: "race_list.txt" },
-            "period-of-months": { type: "string", default: "12" },
+            temp: { type: "string", default: DEFAULT_TEMP_DIRECTORY },
+            "race-list-file": { type: "string", default: DEFAULT_RACE_LIST_FILE },
+            "period-of-months": { type: "string", default: String(DEFAULT_PERIOD_OF_MONTHS) },
             "rebuild-all-tables": { type: "boolean", default: false },
             "rebuild-feature": { type: "boolean", default: false },
             "update-race-list": { type: "boolean", short: "U", default: false },

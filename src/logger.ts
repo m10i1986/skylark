@@ -72,17 +72,20 @@ export function describeError(error: unknown): string {
 }
 
 /**
- * 標準エラー出力へ書き出すロガーを作る
+ * 1行ずつ任意の書き出し先へ渡すロガーを作る
+ *
+ * 行の形式は標準エラー出力のロガーと同じ(例外を渡した場合は複数行になる)
  *
  * @param minimumLevel - 出力する最小の重要度
+ * @param writeLine - 行末の改行を含まない1件分の文字列の書き出し先
  * @returns ロガー
  */
-export function createLogger(minimumLevel: LogLevel): Logger {
+export function createLoggerWithSink(minimumLevel: LogLevel, writeLine: (line: string) => void): Logger {
     const write = (level: LogLevel, message: string): void => {
         if (LEVEL_ORDER[level] < LEVEL_ORDER[minimumLevel]) {
             return;
         }
-        process.stderr.write(`[${formatTimestamp(new Date())}][${LEVEL_LABEL[level]}] ${message}\n`);
+        writeLine(`[${formatTimestamp(new Date())}][${LEVEL_LABEL[level]}] ${message}`);
     };
 
     return {
@@ -92,4 +95,16 @@ export function createLogger(minimumLevel: LogLevel): Logger {
         error: (message, cause) =>
             write("error", cause === undefined ? message : `${message}\n${describeError(cause)}`),
     };
+}
+
+/**
+ * 標準エラー出力へ書き出すロガーを作る
+ *
+ * @param minimumLevel - 出力する最小の重要度
+ * @returns ロガー
+ */
+export function createLogger(minimumLevel: LogLevel): Logger {
+    return createLoggerWithSink(minimumLevel, (line) => {
+        process.stderr.write(`${line}\n`);
+    });
 }
