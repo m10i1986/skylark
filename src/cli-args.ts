@@ -5,6 +5,8 @@
 
 import { parseArgs } from "node:util";
 
+import { DEFAULT_VALUE_CRITERIA, type ValueCriteria } from "./predict/value.ts";
+
 /** コマンドライン引数の内容 */
 export type CliArguments = {
     // HTMLキャッシュなどを置くディレクトリ
@@ -16,10 +18,23 @@ export type CliArguments = {
     isUpdateRaceList: boolean;
     isScraping: boolean;
     isFeature: boolean;
+    isTrain: boolean;
+    isPredict: boolean;
+    isReport: boolean;
+    isVerbose: boolean;
     isDebug: boolean;
     isHelp: boolean;
+    // 結果の突き合わせ(--report)の開催日(YYYY-MM-DD) 省略時は今日
+    date: string | null;
+    // 学習と予測で履歴に使う最初の開催日(YYYY-MM-DD)
+    historySince: string;
+    // 「勝率が高いのに人気がない馬」の抽出条件
+    valueCriteria: ValueCriteria;
     raceIds: string[];
 };
+
+/** 学習と予測で履歴に使う最初の開催日の既定値 DBの2016年分は2017〜2024年と離れているため使わない */
+export const DEFAULT_HISTORY_SINCE = "2025-01-01";
 
 /** コマンドライン引数が不正であることを表す */
 export class CliUsageError extends Error {
@@ -32,13 +47,15 @@ export class CliUsageError extends Error {
 /** ヘルプ表示用の文章 */
 export const USAGE = `usage: cli.ts [-h] [--temp TEMP] [--race-list-file RACE_LIST_FILE]
               [--period-of-months PERIOD_OF_MONTHS] [--rebuild-all-tables]
-              [-Rf] [-U] [-S] [-F] [--debug]
+              [-Rf] [-U] [-S] [-F] [-T] [-P] [--report] [--date DATE]
+              [--history-since DATE] [--min-odds N] [--min-popularity N]
+              [--max-rank N] [--min-ev N] [--verbose] [--debug]
               [race_id ...]
 
 This script is a program that netkeiba.com scraping.
 
 positional arguments:
-  race_id               Race ID
+  race_id               Race ID (with -S: races to download, with -P: races to predict)
 
 options:
   -h, --help            show this help message and exit
@@ -54,6 +71,17 @@ options:
                         Update race list(default: False)
   -S, --scraping        scraping mode(default: False)
   -F, --feature         feature mode(default: False)
+  -T, --train           train the win probability model and save it to the DB(default: False)
+  -P, --predict         predict today's central races and extract horses whose
+                        win probability is high but popularity is low(default: False)
+  --report              compare saved predictions with the results of --date(default: False)
+  --date DATE           date for --report, YYYY-MM-DD(default: today)
+  --history-since DATE  first date of the past results used by -T and -P(default: 2025-01-01)
+  --min-odds N          pick: win odds at least N(default: 10)
+  --min-popularity N    pick: popularity rank N or lower, a larger number is less popular(default: 4)
+  --max-rank N          pick: model win probability rank N or higher(default: 5)
+  --min-ev N            pick: expected value (win probability x odds) at least N, 0 disables(default: 1)
+  --verbose             show every runner of every race with -P(default: False)
   --debug               Debug mode(default: False)
 `;
 
@@ -85,6 +113,14 @@ export function parseCliArguments(argv: readonly string[]): CliArguments {
         throw new CliUsageError(`argument --period-of-months: invalid int value: '${periodText}'`);
     }
 
+    const valueCriteria: ValueCriteria = {
+        minOdds: parseNumberOption("--min-odds", values["min-odds"], 1),
+        minPopularity: parseIntegerOption("--min-popularity", values["min-popularity"], 1),
+        maxModelRank: parseIntegerOption("--max-rank", values["max-rank"], 1),
+        minExpectedValue: parseNumberOption("--min-ev", values["min-ev"], 0),
+    };
+    const date = values.date == null ? null : parseDateOption("--date", values.date);
+
     return {
         temp: values.temp,
         raceListFile: values["race-list-file"],
@@ -94,10 +130,42 @@ export function parseCliArguments(argv: readonly string[]): CliArguments {
         isUpdateRaceList: values["update-race-list"],
         isScraping: values.scraping,
         isFeature: values.feature,
+        isTrain: values.train,
+        isPredict: values.predict,
+        isReport: values.report,
+        isVerbose: values.verbose,
         isDebug: values.debug,
         isHelp: values.help,
+        date,
+        historySince: parseDateOption("--history-since", values["history-since"]),
+        valueCriteria,
         raceIds: positionals,
     };
+}
+
+function parseNumberOption(name: string, text: string, minimum: number): number {
+    const value = Number(text.trim());
+    if (text.trim() === "" || !Number.isFinite(value) || value < minimum) {
+        throw new CliUsageError(`argument ${name}: must be a number of at least ${minimum}: '${text}'`);
+    }
+    return value;
+}
+
+function parseIntegerOption(name: string, text: string, minimum: number): number {
+    if (!/^\d{1,6}$/.test(text.trim()) || Number(text.trim()) < minimum) {
+        throw new CliUsageError(`argument ${name}: must be an integer of at least ${minimum}: '${text}'`);
+    }
+    return Number(text.trim());
+}
+
+// 「2026-02-30」のように存在しない日付も拒否する
+function parseDateOption(name: string, text: string): string {
+    const isRealDate =
+        /^\d{4}-\d{2}-\d{2}$/.test(text) && new Date(Date.parse(text)).toISOString().slice(0, 10) === text;
+    if (!isRealDate) {
+        throw new CliUsageError(`argument ${name}: must be a date like 2026-01-31: '${text}'`);
+    }
+    return text;
 }
 
 function parseWithSchema(args: string[]) {
@@ -114,6 +182,16 @@ function parseWithSchema(args: string[]) {
             "update-race-list": { type: "boolean", short: "U", default: false },
             scraping: { type: "boolean", short: "S", default: false },
             feature: { type: "boolean", short: "F", default: false },
+            train: { type: "boolean", short: "T", default: false },
+            predict: { type: "boolean", short: "P", default: false },
+            report: { type: "boolean", default: false },
+            verbose: { type: "boolean", default: false },
+            date: { type: "string" },
+            "history-since": { type: "string", default: DEFAULT_HISTORY_SINCE },
+            "min-odds": { type: "string", default: String(DEFAULT_VALUE_CRITERIA.minOdds) },
+            "min-popularity": { type: "string", default: String(DEFAULT_VALUE_CRITERIA.minPopularity) },
+            "max-rank": { type: "string", default: String(DEFAULT_VALUE_CRITERIA.maxModelRank) },
+            "min-ev": { type: "string", default: String(DEFAULT_VALUE_CRITERIA.minExpectedValue) },
             debug: { type: "boolean", default: false },
             help: { type: "boolean", short: "h", default: false },
         },

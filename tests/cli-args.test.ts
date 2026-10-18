@@ -5,7 +5,8 @@
 
 import { describe, expect, test } from "bun:test";
 
-import { CliUsageError, parseCliArguments } from "../src/cli-args.ts";
+import { CliUsageError, DEFAULT_HISTORY_SINCE, parseCliArguments } from "../src/cli-args.ts";
+import { DEFAULT_VALUE_CRITERIA } from "../src/predict/value.ts";
 
 describe("parseCliArguments", () => {
     test("uses the same defaults as the original argparse definition", () => {
@@ -18,8 +19,15 @@ describe("parseCliArguments", () => {
             isUpdateRaceList: false,
             isScraping: false,
             isFeature: false,
+            isTrain: false,
+            isPredict: false,
+            isReport: false,
+            isVerbose: false,
             isDebug: false,
             isHelp: false,
+            date: null,
+            historySince: DEFAULT_HISTORY_SINCE,
+            valueCriteria: DEFAULT_VALUE_CRITERIA,
             raceIds: [],
         });
     });
@@ -65,5 +73,46 @@ describe("parseCliArguments", () => {
 
     test("rejects a value option without a value", () => {
         expect(() => parseCliArguments(["--temp"])).toThrow(CliUsageError);
+    });
+
+    test("parses the train, predict and report modes", () => {
+        expect(parseCliArguments(["-T"]).isTrain).toBe(true);
+        expect(parseCliArguments(["--train"]).isTrain).toBe(true);
+        expect(parseCliArguments(["-P", "202605040711"])).toMatchObject({
+            isPredict: true,
+            raceIds: ["202605040711"],
+        });
+        expect(parseCliArguments(["--report", "--date", "2026-10-18"])).toMatchObject({
+            isReport: true,
+            date: "2026-10-18",
+        });
+    });
+
+    test("parses the value criteria", () => {
+        const args = parseCliArguments([
+            "-P",
+            "--min-odds",
+            "15.5",
+            "--min-popularity",
+            "6",
+            "--max-rank=3",
+            "--min-ev",
+            "0",
+        ]);
+        expect(args.valueCriteria).toEqual({ minOdds: 15.5, minPopularity: 6, maxModelRank: 3, minExpectedValue: 0 });
+    });
+
+    test("rejects invalid criteria", () => {
+        expect(() => parseCliArguments(["--min-odds", "0.5"])).toThrow(CliUsageError);
+        expect(() => parseCliArguments(["--min-odds", "abc"])).toThrow(CliUsageError);
+        expect(() => parseCliArguments(["--min-popularity", "0"])).toThrow(CliUsageError);
+        expect(() => parseCliArguments(["--max-rank", "2.5"])).toThrow(CliUsageError);
+        expect(() => parseCliArguments(["--min-ev", "-1"])).toThrow(CliUsageError);
+    });
+
+    test("rejects a date that does not exist", () => {
+        expect(() => parseCliArguments(["--date", "2026-02-30"])).toThrow(CliUsageError);
+        expect(() => parseCliArguments(["--date", "20261018"])).toThrow(CliUsageError);
+        expect(() => parseCliArguments(["--history-since", "yesterday"])).toThrow(CliUsageError);
     });
 });
