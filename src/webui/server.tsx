@@ -6,15 +6,20 @@
 import { resolve } from "node:path";
 
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { csrf } from "hono/csrf";
 import { secureHeaders } from "hono/secure-headers";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
 
+import { type CliArguments, DEFAULT_TEMP_DIRECTORY } from "../cli-args.ts";
 import { loadDatabaseConfig, readIntegerEnv } from "../config.ts";
 import { createDatabase, runMigrations } from "../db/client.ts";
 import { SkylarkCrud } from "../db/crud.ts";
 import type { RaceInfoRecord } from "../db/schema.ts";
 import { createLogger, describeError, type Logger } from "../logger.ts";
+import { runOperations } from "../operations.ts";
 import { renderDocument } from "./document.tsx";
+import { createJobRunner, type JobRunner, type JobSpec } from "./job-runner.ts";
 import {
     createNetkeibaClient,
     type NetkeibaClient,
@@ -22,6 +27,9 @@ import {
     type RaceInformation,
     type RaceListItem,
 } from "./netkeiba-client.ts";
+import type { OperationFormValues } from "./operation-fields.ts";
+import { buildOperationDefaults, collectFormValues, parseOperationForm } from "./operation-form.ts";
+import type { JobEventsResponse } from "./operations-views.tsx";
 import { createTtlCache } from "./ttl-cache.ts";
 import type { Notice, RaceDetail } from "./views.tsx";
 
@@ -33,6 +41,10 @@ const DEFAULT_PORT = 8501;
 
 const LOOPBACK_HOSTNAMES: ReadonlySet<string> = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
 const RACE_ID_PATTERN = /^\d{1,18}$/;
+const JOB_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const AFTER_PATTERN = /^\d{1,12}$/;
+// 操作フォームの本文の上限 入力欄の上限(レースID)に余裕を足した値
+const OPERATION_BODY_LIMIT_BYTES = 64 * 1024;
 
 // 配信するクライアントのファイル 名前を固定し 任意のパスを読ませない(scripts/build-webui.tsが作る)
 const ASSET_CONTENT_TYPES: Readonly<Record<string, string>> = {
@@ -55,6 +67,15 @@ function isNoticeCode(value: string | undefined): value is NoticeCode {
     return value != null && Object.hasOwn(NOTICES, value);
 }
 
+/** 操作の画面(CLIの全操作)が使う外部とのやり取り */
+export type OperationsDependencies = {
+    runner: JobRunner;
+    // 受け付けた引数から 実行する処理を作る
+    createExecutor: (args: CliArguments) => JobSpec["execute"];
+    // HTMLキャッシュの置き場 画面からは変えさせない
+    tempDirectory: string;
+};
+
 /** 画面が使う外部とのやり取り */
 export type WebUiDependencies = {
     client: NetkeibaClient;
@@ -68,6 +89,8 @@ export type WebUiDependencies = {
     isHostAllowed: (hostname: string) => boolean;
     // 作成済みのクライアント(JSとCSS)を置いたディレクトリ 省略時は dist/webui
     assetsDirectory?: string;
+    // 省略すると操作の画面は無効(404)
+    operations?: OperationsDependencies;
 };
 
 // 「0」以上で件数未満の整数だけを受け付け それ以外は先頭を選ぶ
@@ -118,6 +141,8 @@ export function createApp(dependencies: WebUiDependencies): Hono {
                 defaultSrc: ["'none'"],
                 // スクリプトとCSSは同じオリジンの/assets/だけ
                 scriptSrc: ["'self'"],
+                // ジョブの進み具合の取得(fetch)は同じオリジンだけ
+                connectSrc: ["'self'"],
                 // 'unsafe-inline'はRadixが出す style属性のため(従来の方針と同じ)
                 styleSrc: ["'self'", "'unsafe-inline'"],
                 formAction: ["'self'"],
@@ -197,7 +222,19 @@ export function createApp(dependencies: WebUiDependencies): Hono {
             }
         }
 
-        return c.html(renderDocument({ dates, dateIndex, races, raceIndex, selectedRaceText, detail, notice }));
+        return c.html(
+            renderDocument({
+                page: "index",
+                dates,
+                dateIndex,
+                races,
+                raceIndex,
+                selectedRaceText,
+                detail,
+                notice,
+                isOperationsEnabled: dependencies.operations != null,
+            }),
+        );
     });
 
     // 表示用の詳細を作り 保管できる場合は保管用のレコードを覚えておく
@@ -262,7 +299,91 @@ export function createApp(dependencies: WebUiDependencies): Hono {
         }
     });
 
+    registerOperationRoutes(app, dependencies);
+
     return app;
+}
+
+// 操作の画面 CLIの全操作を画面から実行し 進み具合を見る
+function registerOperationRoutes(app: Hono, dependencies: WebUiDependencies): void {
+    const { operations } = dependencies;
+    if (operations == null) {
+        return;
+    }
+    const defaults = buildOperationDefaults(operations.tempDirectory);
+
+    const renderOperations = (values: OperationFormValues, errors: string[], notice: Notice | null): string =>
+        renderDocument({
+            page: "operations",
+            values,
+            errors,
+            notice,
+            defaults,
+            jobs: operations.runner.list(),
+            runningJobId: operations.runner.runningJobId(),
+        });
+
+    app.get("/operations", (c) => c.html(renderOperations({}, [], null)));
+
+    app.post(
+        "/operations",
+        bodyLimit({ maxSize: OPERATION_BODY_LIMIT_BYTES, onError: (c) => c.text("Payload Too Large", 413) }),
+        async (c) => {
+            const values = collectFormValues(await c.req.parseBody());
+            const parsed = parseOperationForm(values);
+            if (!parsed.ok) {
+                return c.html(renderOperations(values, parsed.errors, null), 400);
+            }
+
+            // HTMLキャッシュの置き場は画面から指定させない
+            const args: CliArguments = { ...parsed.operation.args, temp: operations.tempDirectory };
+            const started = operations.runner.start({
+                title: parsed.operation.title,
+                commandLine: parsed.operation.commandLine,
+                isDebug: args.isDebug,
+                execute: operations.createExecutor(args),
+            });
+            if (started.ok) {
+                return c.redirect(`/jobs/${started.id}`, 303);
+            }
+            const text =
+                started.reason === "busy"
+                    ? "別のジョブが実行中のため、始められませんでした。終わってからもう一度実行してください。"
+                    : "サーバーを停止する途中のため、ジョブを始められません。";
+            const status: ContentfulStatusCode = started.reason === "busy" ? 409 : 503;
+            return c.html(renderOperations(values, [], { kind: "error", text }), status);
+        },
+    );
+
+    app.get("/jobs/:id", (c) => {
+        const id = c.req.param("id");
+        const job = JOB_ID_PATTERN.test(id) ? operations.runner.view(id) : undefined;
+        if (job == null) {
+            return c.text("Not Found", 404);
+        }
+        return c.html(renderDocument({ page: "job", job }));
+    });
+
+    // 画面が一定間隔で呼ぶ after より後の出力と 現在の状態を返す
+    app.get("/jobs/:id/events", (c) => {
+        const id = c.req.param("id");
+        const afterText = c.req.query("after");
+        const after = afterText != null && AFTER_PATTERN.test(afterText) ? Number(afterText) : -1;
+        const job = JOB_ID_PATTERN.test(id) ? operations.runner.view(id, after) : undefined;
+        if (job == null) {
+            return c.json({ error: "not found" }, 404);
+        }
+        const body: JobEventsResponse = {
+            status: job.status,
+            finishedAt: job.finishedAt,
+            entries: job.entries,
+            droppedLogLines: job.droppedLogLines,
+            isOutputTruncated: job.isOutputTruncated,
+            lastSeq: job.lastSeq,
+        };
+        c.header("cache-control", "no-store");
+        return c.json(body);
+    });
 }
 
 /** サーバー起動の設定 */
@@ -270,6 +391,19 @@ export type WebUiServerOptions = {
     hostname: string;
     port: number;
     chromiumExecutablePath?: string;
+    // ループバック以外で待ち受けるときも 操作の画面を有効にするか(認証が無いため 明示した場合だけ)
+    isOperationsAllowedOnNetwork?: boolean;
+    // HTMLキャッシュの置き場 省略時は ./temp
+    tempDirectory?: string;
+};
+
+/** 起動したサーバーの操作 */
+export type WebUiServer = {
+    port: number;
+    // 実行中のジョブがあるか
+    hasRunningJob: () => boolean;
+    // 新しいジョブを断り 実行中のジョブが終わるのを待ってから止める
+    stop: () => Promise<void>;
 };
 
 /**
@@ -279,9 +413,9 @@ export type WebUiServerOptions = {
  *
  * @param options - 待ち受けの設定
  * @param logger - ロガー
- * @returns 停止用の関数
+ * @returns 停止用の関数など
  */
-export function startWebUi(options: WebUiServerOptions, logger: Logger): { port: number; stop: () => Promise<void> } {
+export function startWebUi(options: WebUiServerOptions, logger: Logger): WebUiServer {
     const client = createNetkeibaClient({ executablePath: options.chromiumExecutablePath });
     let database: ReturnType<typeof createDatabase> | null = null;
     let crudPromise: Promise<SkylarkCrud> | null = null;
@@ -300,9 +434,20 @@ export function startWebUi(options: WebUiServerOptions, logger: Logger): { port:
     };
 
     const isLoopbackOnly = LOOPBACK_HOSTNAMES.has(options.hostname);
+    const isOperationsEnabled = isLoopbackOnly || options.isOperationsAllowedOnNetwork === true;
     if (!isLoopbackOnly) {
         logger.warning(`listening on ${options.hostname}: this UI has no authentication and can write to the DB`);
+        if (isOperationsEnabled) {
+            logger.warning(
+                "operations are enabled (WEBUI_ENABLE_OPERATIONS): anyone who can reach this port can delete data and start downloads",
+            );
+        } else {
+            logger.info("operations are disabled on this host (set WEBUI_ENABLE_OPERATIONS=1 to enable them)");
+        }
     }
+
+    const tempDirectory = options.tempDirectory ?? DEFAULT_TEMP_DIRECTORY;
+    const runner = isOperationsEnabled ? createJobRunner({ logger }) : null;
 
     const app = createApp({
         client,
@@ -311,6 +456,24 @@ export function startWebUi(options: WebUiServerOptions, logger: Logger): { port:
         isHostAllowed: (hostname) => !isLoopbackOnly || LOOPBACK_HOSTNAMES.has(hostname),
         isRaceSaved: async (raceId) => (await (await getCrud()).getRaceInfo(raceId)) != null,
         saveRaceInfo: async (record) => (await getCrud()).insertRaceInfo(record),
+        operations:
+            runner == null
+                ? undefined
+                : {
+                      runner,
+                      tempDirectory,
+                      createExecutor: (args) => async (context) => {
+                          await runOperations(args, {
+                              logger: context.logger,
+                              output: context.output,
+                              env: process.env,
+                              // 閲覧の画面と同じブラウザを使い回す ジョブが終わっても閉じない
+                              acquireNetkeibaClient: async () => ({ client, release: async () => {} }),
+                              // 進捗は標準エラー出力ではなく ジョブのログへ出す
+                              writeProgressLine: (line) => context.logger.info(line),
+                          });
+                      },
+                  },
     });
 
     const server = Bun.serve({ hostname: options.hostname, port: options.port, fetch: app.fetch });
@@ -320,7 +483,11 @@ export function startWebUi(options: WebUiServerOptions, logger: Logger): { port:
 
     return {
         port: server.port ?? options.port,
+        hasRunningJob: () => runner?.runningJobId() != null,
         stop: async () => {
+            // 実行中のジョブが使うブラウザとDBを閉じてしまわないよう 先にジョブの終了を待つ
+            runner?.stopAccepting();
+            await runner?.whenIdle();
             await server.stop();
             await client.close();
             await database?.$client.close();
@@ -328,19 +495,34 @@ export function startWebUi(options: WebUiServerOptions, logger: Logger): { port:
     };
 }
 
+// 「1」か「true」のときだけ有効 それ以外(未設定を含む)は無効
+function isEnabledFlag(value: string | undefined): boolean {
+    return value === "1" || value?.toLowerCase() === "true";
+}
+
 if (import.meta.main) {
     const logger = createLogger("info");
     const chromiumExecutablePath = process.env.CHROMIUM_EXECUTABLE_PATH;
-    const { stop } = startWebUi(
+    const { stop, hasRunningJob } = startWebUi(
         {
             hostname: process.env.WEBUI_HOST ?? DEFAULT_HOST,
             port: readIntegerEnv(process.env, "WEBUI_PORT", DEFAULT_PORT),
             // 空文字は未指定として扱う
             chromiumExecutablePath: chromiumExecutablePath === "" ? undefined : chromiumExecutablePath,
+            isOperationsAllowedOnNetwork: isEnabledFlag(process.env.WEBUI_ENABLE_OPERATIONS),
         },
         logger,
     );
+    let isStopping = false;
     const shutdown = (): void => {
+        if (isStopping) {
+            logger.warning("forced exit while a job is running");
+            process.exit(1);
+        }
+        isStopping = true;
+        if (hasRunningJob()) {
+            logger.warning("waiting for the running job to finish (send the signal again to force exit)");
+        }
         void stop().finally(() => process.exit(0));
     };
     process.on("SIGINT", shutdown);

@@ -38,6 +38,41 @@ export function NoticeBox({ notice }: { notice: Notice }): ReactNode {
     );
 }
 
+/** 画面の切り替え 操作の画面が無効な場合は何も出さない */
+export function SiteNav({
+    current,
+    isOperationsEnabled,
+}: {
+    current: "races" | "operations";
+    isOperationsEnabled: boolean;
+}): ReactNode {
+    if (!isOperationsEnabled) {
+        return null;
+    }
+    const items = [
+        { key: "races", href: "/", label: "レース情報" },
+        { key: "operations", href: "/operations", label: "操作" },
+    ] as const;
+    return (
+        <nav aria-label="画面の切り替え" className="flex gap-4 text-sm">
+            {items.map((item) => (
+                <a
+                    key={item.key}
+                    href={item.href}
+                    aria-current={item.key === current ? "page" : undefined}
+                    className={
+                        item.key === current
+                            ? "font-semibold underline underline-offset-4"
+                            : "text-muted-foreground underline-offset-4 hover:underline"
+                    }
+                >
+                    {item.label}
+                </a>
+            ))}
+        </nav>
+    );
+}
+
 /**
  * 開催日とレースの番号から画面のパスを作る
  *
@@ -140,8 +175,8 @@ export type RaceDetail = {
     unsavableReason: string | null;
 };
 
-/** 画面の描画に必要な値 JSONにできる値だけを持つ(クライアントへそのまま渡す) */
-export type PageProps = {
+/** レース情報の画面の描画に必要な値 JSONにできる値だけを持つ(クライアントへそのまま渡す) */
+export type IndexPageProps = {
     dates: RaceDate[];
     dateIndex: number;
     races: RaceListItem[] | null;
@@ -149,6 +184,8 @@ export type PageProps = {
     selectedRaceText: string | null;
     detail: RaceDetail | null;
     notice: Notice | null;
+    // 操作の画面(CLIの全操作)を使えるか
+    isOperationsEnabled: boolean;
 };
 
 function RaceDetailView({ detail, heading }: { detail: RaceDetail; heading: string }): ReactNode {
@@ -207,13 +244,14 @@ function RaceDetailView({ detail, heading }: { detail: RaceDetail; heading: stri
     );
 }
 
-export function IndexPage(props: PageProps): ReactNode {
-    const { dates, dateIndex, races, raceIndex, selectedRaceText, detail, notice } = props;
+export function IndexPage(props: IndexPageProps): ReactNode {
+    const { dates, dateIndex, races, raceIndex, selectedRaceText, detail, notice, isOperationsEnabled } = props;
     const selectedDate = dates[dateIndex];
 
     return (
         <main className="mx-auto flex max-w-6xl flex-col gap-6 p-4 sm:p-8">
             <h1 className="text-2xl font-semibold tracking-tight">Skylark: netkeiba.com レース情報</h1>
+            <SiteNav current="races" isOperationsEnabled={isOperationsEnabled} />
 
             {notice != null && <NoticeBox notice={notice} />}
 

@@ -5,8 +5,8 @@
 
 import { renderToString } from "react-dom/server";
 
+import { App, type AppProps } from "./app.tsx";
 import { PROPS_ELEMENT_ID, ROOT_ELEMENT_ID } from "./dom-ids.ts";
-import { IndexPage, type PageProps } from "./views.tsx";
 
 // JSONをscript要素へ埋め込むとき 「</script>」などで要素を閉じられないよう「<」を置き換える
 function toEmbeddedJson(value: unknown): string {
@@ -21,8 +21,8 @@ function toEmbeddedJson(value: unknown): string {
  * @param props - 画面の描画に必要な値
  * @returns HTML文書
  */
-export function renderDocument(props: PageProps): string {
-    const body = renderToString(<IndexPage {...props} />);
+export function renderDocument(props: AppProps): string {
+    const body = renderToString(<App {...props} />);
     return [
         "<!DOCTYPE html>",
         '<html lang="ja">',
