@@ -167,15 +167,16 @@ pnpm exec shadcn add <部品名>
 テーブル定義を変えたら、次のコマンドでマイグレーションを生成します。起動時に未適用分が自動で適用されます。
 
 ```bash
-pnpm db:generate
+bun run db:generate
+bun run db:migrate
 ```
 
 ## テストと検査
 
 ```bash
 bun test              # 単体テスト(PGlite = インプロセスのPostgreSQLを使うためDBサーバーは不要)
-pnpm typecheck        # 型検査
-pnpm lint             # Biome
+bun run typecheck     # 型検査
+bun run lint          # Biome
 ```
 
 実ブラウザを使うテストは、`CHROMIUM_EXECUTABLE_PATH` かインストール済みのブラウザがあれば実行され、無ければ自動でスキップされます。
