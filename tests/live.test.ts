@@ -20,6 +20,7 @@ import {
 } from "../src/predict/live.ts";
 import type { ModelParameters } from "../src/predict/model.ts";
 import { formatPredictions, formatTrainingReport, formatVerification } from "../src/predict/report.ts";
+import type { TrainingResult } from "../src/predict/train.ts";
 import { DEFAULT_VALUE_CRITERIA } from "../src/predict/value.ts";
 import type {
     HorseEntry,
@@ -504,6 +505,8 @@ describe("reports", () => {
             to: "2026-10-12",
             races: 972,
             meanLogLoss: { market: 1.8812, model: 1.8787 },
+            // 改善0.0025は標準誤差0.0030の2倍に届かない
+            improvement: { mean: 0.0025, standardError: 0.003 },
             top1HitRate: { market: 0.356, model: 0.355 },
             valuePicks: {
                 bets: 57,
@@ -524,25 +527,45 @@ describe("reports", () => {
                 returnRateStandardError: 0.07,
             },
         };
-        const text = formatTrainingReport(
-            {
-                parameters: ageLovingModel(),
-                split: {
-                    historyFrom: "2025-01-05",
-                    trainFrom: "2025-04-05",
-                    validFrom: "2026-03-27",
-                    testFrom: "2026-07-05",
-                    dataTo: "2026-10-12",
-                },
-                selectedL2: 100,
-                l2Candidates: [{ l2: 100, validLogLoss: 1.94 }],
-                races: { train: 3377, valid: 972, test: 972 },
-                valid: metrics,
-                test: metrics,
-                criteria: DEFAULT_VALUE_CRITERIA,
+        const block = (from: string, to: string, races: number, mean: number, standardError: number) => ({
+            ...metrics,
+            from,
+            to,
+            races,
+            improvement: { mean, standardError },
+        });
+        const devBlocks = [
+            block("2026-03-05", "2026-05-04", 600, 0.0024, 0.0025),
+            block("2026-05-05", "2026-07-04", 1564, 0.0106, 0.0035),
+            block("2026-07-05", "2026-07-06", 5, -0.0123, 0.0021),
+        ];
+        const result: TrainingResult = {
+            parameters: ageLovingModel(),
+            split: {
+                historyFrom: "2025-01-05",
+                trainFrom: "2025-04-05",
+                validFrom: "2025-09-03",
+                testFrom: "2026-07-05",
+                dataTo: "2026-10-12",
             },
-            1,
-        );
+            selectedL2: 1000,
+            l2Candidates: [
+                { l2: 100, devLogLoss: 1.9365 },
+                { l2: 1000, devLogLoss: 1.9355 },
+            ],
+            races: { train: 1511, dev: 2838, test: 972, all: 5321 },
+            dev: {
+                ...metrics,
+                from: "2025-09-03",
+                to: "2026-07-04",
+                races: 2838,
+                improvement: { mean: 0.0043, standardError: 0.0015 },
+            },
+            devBlocks,
+            test: metrics,
+            criteria: DEFAULT_VALUE_CRITERIA,
+        };
+        const text = formatTrainingReport(result, 1);
         expect(text).toContain("モデル #1");
         // 回収率144%±52% は 100%との差が誤差の範囲
         expect(text).toContain("回収率144%±52% (100%との差は誤差の範囲)");
@@ -550,5 +573,16 @@ describe("reports", () => {
         expect(text).toContain("回収率66%±7%");
         expect(text).not.toContain("回収率66%±7% (100%との差は誤差の範囲)");
         expect(text).toContain("割安な馬を見つけられていません");
+
+        // 対数損失の改善は 標準誤差の2倍を超えるかで 言葉を変える
+        expect(text).toContain("対数損失の改善(市場 - モデル): 0.0043 ±0.0015 誤差を超えています");
+        expect(text).toContain("対数損失の改善(市場 - モデル): 0.0025 ±0.0030 誤差の範囲です");
+        expect(text).toContain("-0.0123 ±0.0021 市場より悪化しています");
+        // 区間ごとの表 レース数の桁をそろえる
+        expect(text).toContain("2026-03-05 〜 2026-05-04  600レース 0.0024 ±0.0025 誤差の範囲です");
+        expect(text).toContain("2026-05-05 〜 2026-07-04 1564レース 0.0106 ±0.0035 誤差を超えています");
+        // L2は開発期間の対数損失で選んだこと 保存するモデルが全期間で学習し直したものであることを示す
+        expect(text).toContain("100→1.9365 1000→1.9355 → 1000 を採用");
+        expect(text).toContain("全期間(5321レース)で学習し直したもの");
     });
 });

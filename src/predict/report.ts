@@ -4,7 +4,7 @@
 //
 
 import type { PredictionWithResult } from "../db/prediction-repository.ts";
-import type { PeriodMetrics, PickStats } from "./evaluation.ts";
+import type { ImprovementStats, PeriodMetrics, PickStats } from "./evaluation.ts";
 import type { PredictTodayResult, RacePrediction } from "./live.ts";
 import type { TrainingResult } from "./train.ts";
 import type { ValueCriteria } from "./value.ts";
@@ -63,14 +63,42 @@ function describePicks(label: string, stats: PickStats): string {
         .join(" ");
 }
 
-function describePeriod(title: string, metrics: PeriodMetrics): string[] {
-    const improvement = metrics.meanLogLoss.market - metrics.meanLogLoss.model;
+// 対数損失の改善が 標準誤差の2倍を超えているかを言葉にする(超えていなければ 誤差と区別できない)
+function describeImprovement(improvement: ImprovementStats): string {
+    const sign = improvement.mean >= 0 ? "" : "-";
+    const value = `${sign}${Math.abs(improvement.mean).toFixed(4)} ±${improvement.standardError.toFixed(4)}`;
+    if (improvement.standardError === 0) {
+        return value;
+    }
+    if (improvement.mean >= 2 * improvement.standardError) {
+        return `${value} 誤差を超えています`;
+    }
+    if (improvement.mean <= -2 * improvement.standardError) {
+        return `${value} 市場より悪化しています`;
+    }
+    return `${value} 誤差の範囲です`;
+}
+
+function describePeriod(title: string, metrics: PeriodMetrics, note = ""): string[] {
     return [
-        `${title} ${metrics.from} 〜 ${metrics.to} (${metrics.races}レース)`,
-        `  対数損失(小さいほど良い): 市場 ${metrics.meanLogLoss.market.toFixed(4)} / モデル ${metrics.meanLogLoss.model.toFixed(4)} (改善 ${improvement.toFixed(4)})`,
+        `${title} ${metrics.from} 〜 ${metrics.to} (${metrics.races}レース${note})`,
+        `  対数損失(小さいほど良い): 市場 ${metrics.meanLogLoss.market.toFixed(4)} / モデル ${metrics.meanLogLoss.model.toFixed(4)}`,
+        `  対数損失の改善(市場 - モデル): ${describeImprovement(metrics.improvement)}`,
         `  本命の的中率: 市場 ${percent(metrics.top1HitRate.market)} / モデル ${percent(metrics.top1HitRate.model)}`,
         describePicks("抽出した馬", metrics.valuePicks),
         describePicks("比較: オッズと人気の条件だけが同じ全馬", metrics.longshotBaseline),
+    ];
+}
+
+// 開発期間の区間ごとの改善 区間によってぶれる様子が分かる
+function describeBlocks(blocks: readonly PeriodMetrics[]): string[] {
+    const races = Math.max(...blocks.map((block) => String(block.races).length));
+    return [
+        "  区間ごとの対数損失の改善(市場 - モデル):",
+        ...blocks.map(
+            (block) =>
+                `    ${block.from} 〜 ${block.to} ${padStartDisplay(String(block.races), races)}レース ${describeImprovement(block.improvement)}`,
+        ),
     ];
 }
 
@@ -86,20 +114,27 @@ export function formatTrainingReport(result: TrainingResult, modelId: number | n
     const lines = [
         `学習が完了しました${modelId == null ? "" : ` (モデル #${modelId})`}`,
         "",
-        `履歴の開始 ${split.historyFrom} / 学習 ${split.trainFrom} 〜 / 検証 ${split.validFrom} 〜 / テスト ${split.testFrom} 〜 ${split.dataTo}`,
-        `レース数: 学習 ${result.races.train} / 検証 ${result.races.valid} / テスト ${result.races.test}`,
-        `L2正則化: ${result.l2Candidates.map((c) => `${c.l2}→${c.validLogLoss.toFixed(4)}`).join(" ")} → ${result.selectedL2} を採用`,
+        `履歴の開始 ${split.historyFrom} / 学習 ${split.trainFrom} 〜 / 開発 ${split.validFrom} 〜 / テスト ${split.testFrom} 〜 ${split.dataTo}`,
+        `レース数: 開発の最初の学習 ${result.races.train} / 開発 ${result.races.dev} / テスト ${result.races.test}`,
+        `L2正則化(開発期間の対数損失): ${result.l2Candidates.map((c) => `${c.l2}→${c.devLogLoss.toFixed(4)}`).join(" ")} → ${result.selectedL2} を採用`,
+        `保存したモデルは、テスト期間も含む全期間(${result.races.all}レース)で学習し直したものです 下の成績は 再学習する前の同じ手順のモデルで測っています`,
         `市場の対数確率の係数: ${result.parameters.marketCoefficient.toFixed(3)} (1なら市場をそのまま信じる)`,
         `抽出条件: ${describeCriteria(result.criteria)}`,
         "",
-        ...describePeriod("検証期間", result.valid),
+        ...describePeriod(
+            "開発期間",
+            result.dev,
+            `、${result.devBlocks.length}区間 各区間は直前までの全期間で学習 L2の選択に使った区間のため やや楽観的`,
+        ),
+        ...describeBlocks(result.devBlocks),
         "",
         ...describePeriod("テスト期間", result.test),
         "",
         "【注意】",
-        "  対数損失の改善が小さい(誤差程度)場合、モデルは市場の勝率と大差なく、割安な馬を見つけられていません。",
+        "  対数損失の改善が誤差(標準誤差の2倍)に届かない場合、モデルは市場の勝率と区別できず、割安な馬を見つけられていません。",
         "  回収率は賭けた頭数が少ないと大きくぶれます。誤差の範囲を超えるまでは、儲かる根拠にはなりません。",
-        "  抽出条件は検証期間とテスト期間の両方を見て調べたため、テスト期間の成績は完全には独立していません。",
+        "  開発期間の成績は、L2の選択に使った区間の成績で、やや良く出ます。一度も使っていないテスト期間の成績を重く見てください。",
+        "  抽出条件は開発期間とテスト期間の両方を見て調べたため、成績は完全には独立していません。",
         "  今日以降の予測はPostgreSQLに残るので、--report で確定後の結果と突き合わせて検証してください。",
     ];
     return `${lines.join("\n")}\n`;
