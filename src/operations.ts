@@ -199,6 +199,7 @@ export async function runOperations(args: CliArguments, dependencies: OperationD
             const paths = await makeRaceUrlList(args.periodOfMonths, {
                 logger,
                 fetchHtml: (url) => fetchPageText(url, timeoutSeconds),
+                dayListCacheDirectory: tempDir,
             });
             await exportRaceUrlList(raceListPath, paths);
         }

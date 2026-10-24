@@ -32,6 +32,7 @@ const RETRY_DELAY_MS = 3000;
 const DEFAULT_REQUEST_DELAY_MS = 500;
 // 開催日は日本時間で決まる
 const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** レースID群から結果ページのパス一覧を作る */
 export function raceUrlPathsFromIds(raceIds: readonly string[]): string[] {
@@ -81,6 +82,8 @@ export type RaceListDependencies = {
     now?: Date;
     // 取得のたびに置く待機時間(ミリ秒)
     requestDelayMilliseconds?: number;
+    // 日別一覧の取得結果を置くディレクトリ 指定すると 取得済みの日は通信せずここから読む 省略時は毎回取得する
+    dayListCacheDirectory?: string;
 };
 
 /** 年と月(1から12)を表す */
@@ -96,6 +99,31 @@ function todayInJapan(now: Date): { yearMonth: YearMonth; yyyymmdd: string } {
     const year = shifted.getUTCFullYear();
     const month = shifted.getUTCMonth() + 1;
     return { yearMonth: { year, month }, yyyymmdd: `${pad(year, 4)}${pad(month, 2)}${pad(shifted.getUTCDate(), 2)}` };
+}
+
+function dayListCachePath(directory: string, date: string): string {
+    return path.join(directory, `race_day.${date}.txt`);
+}
+
+/**
+ * 保存済みの日別一覧からレース結果パスを読む
+ *
+ * @returns パス一覧 保存が無い 読めない 中身が空または形式違いの場合はnull(取得し直す)
+ */
+async function readDayListCache(directory: string, date: string): Promise<string[] | null> {
+    const file = Bun.file(dayListCachePath(directory, date));
+    try {
+        if (!(await file.exists())) {
+            return null;
+        }
+        const paths = (await file.text())
+            .split("\n")
+            .map((line) => line.trim())
+            .filter((line) => RACE_PATH_PATTERN.test(line));
+        return paths.length > 0 ? paths : null;
+    } catch {
+        return null;
+    }
 }
 
 function monthsBefore({ year, month }: YearMonth, count: number): YearMonth {
@@ -172,15 +200,22 @@ export function extractRacePaths(listHtml: string): string[] {
  * 月は計算で決める(サイトのトップページは月のリンクを返さなくなった) 今日より後の日は取得しない
  * 取得に失敗した日は読み飛ばし 最後にまとめて警告する 月のカレンダーが続けて取得できない場合は諦める
  *
+ * 保存先(dayListCacheDirectory)を指定すると 取得できた日の一覧を日ごとに保存し 次回からは通信せずそれを使う
+ * 結果がまだ増える今日と昨日は保存も再利用もしない 失敗した日と結果が空の日も保存しない(次回に取得し直す)
+ *
  * @param periodInMonths - 遡る月数(今月を含む)
  * @param dependencies - 取得処理とロガー
  * @returns 収集したパス 重複は除く
  */
 export async function makeRaceUrlList(periodInMonths: number, dependencies: RaceListDependencies): Promise<string[]> {
-    const { logger, fetchHtml } = dependencies;
+    const { logger, fetchHtml, dayListCacheDirectory } = dependencies;
     const wait = dependencies.sleep ?? sleep;
     const requestDelay = dependencies.requestDelayMilliseconds ?? DEFAULT_REQUEST_DELAY_MS;
-    const today = todayInJapan(dependencies.now ?? new Date());
+    const now = dependencies.now ?? new Date();
+    const today = todayInJapan(now);
+    // 今日は結果が増え続け 昨日も地方競馬の夜の開催分が遅れて載るため 一昨日以前の日だけを確定した一覧として保存する
+    const yesterday = todayInJapan(new Date(now.getTime() - DAY_MS)).yyyymmdd;
+    let reusedDays = 0;
     const collected = new Set<string>();
     // 取得できず一覧から抜けた日 一覧が不完全なことに気づけるよう最後に報告する
     const skippedDays: string[] = [];
@@ -240,6 +275,19 @@ export async function makeRaceUrlList(periodInMonths: number, dependencies: Race
         failedMonths = 0;
 
         for (const listPath of extractDayListPaths(calendarHtml, month, today.yyyymmdd)) {
+            const date = RACE_LIST_PATH_PATTERN.exec(listPath)?.[1] ?? "";
+            const cacheDirectory = date !== "" && date < yesterday ? dayListCacheDirectory : undefined;
+
+            const cachedPaths = cacheDirectory == null ? null : await readDayListCache(cacheDirectory, date);
+            if (cachedPaths != null) {
+                logger.info(`race_list path: ${listPath} (already fetched)`);
+                reusedDays++;
+                for (const racePath of cachedPaths) {
+                    collected.add(racePath);
+                }
+                continue;
+            }
+
             logger.info(`race_list path: ${listPath}`);
             const listHtml = await fetchWithRetry(DB_BASE_URL + listPath);
             if (listHtml == null) {
@@ -247,13 +295,25 @@ export async function makeRaceUrlList(periodInMonths: number, dependencies: Race
                 skippedDays.push(listPath);
                 continue;
             }
-            for (const racePath of extractRacePaths(listHtml)) {
+            const dayPaths = extractRacePaths(listHtml);
+            for (const racePath of dayPaths) {
                 collected.add(racePath);
                 logger.debug(`path: ${racePath}`);
+            }
+            // 保存に失敗しても一覧の作成は続ける 次回に取得し直すだけ
+            if (cacheDirectory != null && dayPaths.length > 0) {
+                try {
+                    await exportRaceUrlList(dayListCachePath(cacheDirectory, date), dayPaths);
+                } catch (error) {
+                    logger.warning(`could not save race list of ${date}: ${describeError(error)}`);
+                }
             }
         }
     }
 
+    if (reusedDays > 0) {
+        logger.info(`race list of ${reusedDays} day(s) was already fetched, no request was made`);
+    }
     reportSkippedDays();
     return [...collected];
 }

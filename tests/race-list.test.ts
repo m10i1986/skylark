@@ -326,3 +326,115 @@ describe("makeRaceUrlList", () => {
         expect(called).toBe(false);
     });
 });
+
+describe("makeRaceUrlList: day list cache", () => {
+    const dayUrl = (date: string): string => `${DB_BASE_URL}/race/list/${date}/`;
+    const cacheFile = (date: string): string => path.join(workDir, `race_day.${date}.txt`);
+
+    // 通信した日別一覧のURLを記録しながら 7/24〜7/27 の4日分を返す
+    const fetchWith = (
+        requested: string[],
+        pages: Record<string, string>,
+        days: string[] = ["20250724", "20250725", "20250726", "20250727"],
+    ) => {
+        return async (url: string): Promise<string> => {
+            requested.push(url);
+            return url.includes("ajax_race_calendar") ? calendarJson(days) : (pages[url] ?? "");
+        };
+    };
+
+    const pages = (): Record<string, string> => ({
+        [dayUrl("20250724")]: listPage(["202501010101"]),
+        [dayUrl("20250725")]: listPage(["202501010201"]),
+        [dayUrl("20250726")]: listPage(["202501010301"]),
+        [dayUrl("20250727")]: listPage(["202501010401"]),
+    });
+
+    test("saves settled days only and reuses them without requests, keeping the full list", async () => {
+        const first: string[] = [];
+        const firstPaths = await makeRaceUrlList(1, {
+            logger: createRecordingLogger(),
+            fetchHtml: fetchWith(first, pages()),
+            sleep: async () => {},
+            now: NOW,
+            dayListCacheDirectory: workDir,
+        });
+        // 一昨日以前(7/24 7/25)だけ保存し 昨日(7/26)と今日(7/27)は保存しない
+        expect((await readdir(workDir)).sort()).toEqual(["race_day.20250724.txt", "race_day.20250725.txt"]);
+        expect(await Bun.file(cacheFile("20250724")).text()).toBe("/race/202501010101/\n");
+
+        const second: string[] = [];
+        const logger = createRecordingLogger();
+        const secondPaths = await makeRaceUrlList(1, {
+            logger,
+            fetchHtml: fetchWith(second, pages()),
+            sleep: async () => {},
+            now: NOW,
+            dayListCacheDirectory: workDir,
+        });
+        // 保存済みの日は通信せず 月のカレンダーと昨日・今日だけ取得する それでも一覧は同じ
+        expect(second).toEqual([calendarUrl("202507"), dayUrl("20250726"), dayUrl("20250727")]);
+        expect(secondPaths.sort()).toEqual(firstPaths.sort());
+        expect(firstPaths).toHaveLength(4);
+        expect(logger.ofLevel("info").join("\n")).toContain("2 day(s) was already fetched");
+    });
+
+    test("fetches again a day whose cache is empty or malformed", async () => {
+        await Bun.write(cacheFile("20250724"), "");
+        await Bun.write(cacheFile("20250725"), "garbage\n/race/list/20250725/\n");
+        const requested: string[] = [];
+        const paths = await makeRaceUrlList(1, {
+            logger: createRecordingLogger(),
+            fetchHtml: fetchWith(requested, pages()),
+            sleep: async () => {},
+            now: NOW,
+            dayListCacheDirectory: workDir,
+        });
+        expect(requested).toContain(dayUrl("20250724"));
+        expect(requested).toContain(dayUrl("20250725"));
+        expect(paths).toContain("/race/202501010101/");
+        // 取得し直した結果で保存を置き換える
+        expect(await Bun.file(cacheFile("20250725")).text()).toBe("/race/202501010201/\n");
+    });
+
+    test("does not save a failed day or a day without races, and retries them next time", async () => {
+        const logger = createRecordingLogger();
+        await makeRaceUrlList(1, {
+            logger,
+            fetchHtml: fetchWith([], { [dayUrl("20250724")]: "", [dayUrl("20250725")]: listPage([]) }),
+            sleep: async () => {},
+            now: NOW,
+            dayListCacheDirectory: workDir,
+        });
+        expect(await readdir(workDir)).toEqual([]);
+        expect(logger.ofLevel("warning").join("\n")).toContain("race list is incomplete");
+    });
+
+    test("fetches every day when no cache directory is given", async () => {
+        const requested: string[] = [];
+        await makeRaceUrlList(1, {
+            logger: createRecordingLogger(),
+            fetchHtml: fetchWith(requested, pages()),
+            sleep: async () => {},
+            now: NOW,
+        });
+        expect(requested).toHaveLength(5);
+        expect(await readdir(workDir)).toEqual([]);
+    });
+
+    test("still builds the list when the cache cannot be written", async () => {
+        // 保存先のディレクトリを作れない(同名のファイルがある)場合
+        const blocker = path.join(workDir, "blocker");
+        await Bun.write(blocker, "x");
+        const logger = createRecordingLogger();
+        const paths = await makeRaceUrlList(1, {
+            logger,
+            fetchHtml: fetchWith([], pages()),
+            sleep: async () => {},
+            now: NOW,
+            dayListCacheDirectory: blocker,
+        });
+        expect(paths).toHaveLength(4);
+        expect(logger.ofLevel("warning").join("\n")).toContain("could not save race list of 20250724");
+    });
+});
