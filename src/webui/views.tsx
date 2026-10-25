@@ -11,10 +11,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
+import { NativeSelect } from "@/components/ui/native-select";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { boxTicketCount, TICKET_PRICE_YEN } from "../predict/trifecta.ts";
 import type { HorseEntry, RaceDate, RaceInfoDraft, RaceListItem } from "./netkeiba-client.ts";
-import { FLAG_ON } from "./operation-fields.ts";
+import { AUTO_BOX_MAX_HORSES, BOX_HORSES_CHOICES, FLAG_ON } from "./operation-fields.ts";
 
 // Reactは文字列を自動でエスケープするため サイト由来の値をそのまま埋め込んでも注入されない
 
@@ -264,6 +266,34 @@ function RaceDetailView({ detail, heading }: { detail: RaceDetail; heading: stri
     );
 }
 
+/** Boxの頭数を選ぶ欄 頭数ごとの点数と購入額を添える 先頭の「おまかせ」は頭数を指定せず AIに頭数も選ばせる */
+export function BoxHorsesSelect({
+    id,
+    selectedHorses = null,
+    isDisabled = false,
+}: {
+    id: string;
+    // 選択済みの頭数 nullか選択肢にない値(入力の誤りを戻した場合など)は「おまかせ」
+    selectedHorses?: number | null;
+    isDisabled?: boolean;
+}): ReactNode {
+    const selected =
+        selectedHorses != null && BOX_HORSES_CHOICES.includes(selectedHorses) ? String(selectedHorses) : "";
+    return (
+        <NativeSelect id={id} name="boxHorses" defaultValue={selected} disabled={isDisabled} className="w-auto">
+            <option value="">{`AIにおまかせ (最大${AUTO_BOX_MAX_HORSES}頭 ${boxTicketCount(AUTO_BOX_MAX_HORSES)}点)`}</option>
+            {BOX_HORSES_CHOICES.map((horses) => {
+                const tickets = boxTicketCount(horses);
+                return (
+                    <option key={horses} value={String(horses)}>
+                        {`${horses}頭 (${tickets}点 ${(tickets * TICKET_PRICE_YEN).toLocaleString("ja-JP")}円)`}
+                    </option>
+                );
+            })}
+        </NativeSelect>
+    );
+}
+
 // 表示中のレースだけを対象に 操作の画面と同じ送信先へ 処理の種類とレースIDを渡し 他の設定は既定値にする
 function RaceActionForm({
     detail,
@@ -271,20 +301,30 @@ function RaceActionForm({
     label,
     note,
     isVerbose = false,
+    hasBoxHorses = false,
 }: {
     detail: RaceDetail;
     flag: "predict" | "aiBox";
     label: string;
-    // ボタンの横に出す補足(料金など)
+    // ボタンの横に出す補足(利用枠の消費など)
     note?: string;
     // 報告に全出走馬を出す(--verbose)
     isVerbose?: boolean;
+    // Boxの頭数を選ぶ欄を出す(既定は「おまかせ」)
+    hasBoxHorses?: boolean;
 }): ReactNode {
+    const boxHorsesId = useId();
     return (
         <form method="post" action="/operations" className="flex flex-wrap items-center gap-3">
             <input type="hidden" name={flag} value={FLAG_ON} />
             {isVerbose && <input type="hidden" name="verbose" value={FLAG_ON} />}
             <input type="hidden" name="raceIds" value={String(detail.raceId)} />
+            {hasBoxHorses && (
+                <div className="flex items-center gap-2">
+                    <Label htmlFor={boxHorsesId}>Box の頭数</Label>
+                    <BoxHorsesSelect id={boxHorsesId} isDisabled={detail.unpredictableReason != null} />
+                </div>
+            )}
             <Button type="submit" disabled={detail.unpredictableReason != null}>
                 {label}
             </Button>
@@ -373,7 +413,8 @@ export function IndexPage(props: IndexPageProps): ReactNode {
                             detail={detail}
                             flag="aiBox"
                             label="このレースの3連単Boxを AI に提案させる"
-                            note="Claude API を 1 回呼びます(料金がかかります)。予測も行います。"
+                            hasBoxHorses
+                            note="Claude CLI を 1 回呼びます(Claude の利用枠を消費します)。予測も行います。"
                         />
                     )}
                 </>

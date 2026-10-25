@@ -175,12 +175,12 @@ describe("parseOperationForm: period of months", () => {
 
 describe("parseOperationForm: AI box", () => {
     test("builds the same arguments as the command line for -B", () => {
-        const operation = parsed({ aiBox: ON, boxMaxTickets: "24", raceIds: "202605040711 202605040712" });
+        const operation = parsed({ aiBox: ON, boxHorses: "4", raceIds: "202605040711 202605040712" });
         expect(operation.args).toEqual(
-            parseCliArguments(["-B", "--box-max-tickets=24", "--", "202605040711", "202605040712"]),
+            parseCliArguments(["-B", "--box-horses=4", "--", "202605040711", "202605040712"]),
         );
-        expect(operation.args).toMatchObject({ isAiBox: true, boxMaxTickets: 24, isPredict: false });
-        expect(operation.commandLine).toBe("--ai-box --box-max-tickets=24 -- 202605040711 202605040712");
+        expect(operation.args).toMatchObject({ isAiBox: true, boxHorses: 4, boxMaxTickets: 24, isPredict: false });
+        expect(operation.commandLine).toBe("--ai-box --box-horses=4 -- 202605040711 202605040712");
     });
 
     test("runs after the prediction and before the report, in the same order as the command line", () => {
@@ -189,8 +189,30 @@ describe("parseOperationForm: AI box", () => {
         expect(operation.commandLine).toBe("--predict --ai-box --report -- 202605040711");
     });
 
-    test("uses the default ticket limit when the field is empty", () => {
-        expect(parsed({ aiBox: ON, raceIds: "202605040711" }).args.boxMaxTickets).toBe(60);
+    test("lets the AI choose the number of horses when the field is empty (the select's default)", () => {
+        for (const boxHorses of [undefined, ""]) {
+            const operation = parsed({
+                aiBox: ON,
+                raceIds: "202605040711",
+                ...(boxHorses == null ? {} : { boxHorses }),
+            });
+            expect(operation.args).toMatchObject({ boxHorses: null, boxMaxTickets: 60 });
+            expect(operation.commandLine).toBe("--ai-box -- 202605040711");
+        }
+    });
+
+    test.each([
+        ["3", 6],
+        ["4", 24],
+        ["5", 60],
+        ["6", 120],
+        ["7", 210],
+        ["8", 336],
+    ])("makes a box of exactly %s horses (%i tickets)", (horses, tickets) => {
+        const operation = parsed({ aiBox: ON, boxHorses: horses, raceIds: "202605040711" });
+        expect(operation.args).toMatchObject({ boxHorses: Number(horses), boxMaxTickets: tickets });
+        expect(operation.commandLine).toContain(`--box-horses=${horses}`);
+        expect(operation.commandLine).not.toContain("--box-max-tickets");
     });
 
     test("needs race ids, because every race calls the paid API", () => {
@@ -207,15 +229,33 @@ describe("parseOperationForm: AI box", () => {
         ]);
     });
 
-    test.each(["5", "337", "abc", "2.5", "-24"])("rejects the ticket limit %j", (value) => {
-        const errors = errorsOf({ aiBox: ON, boxMaxTickets: value, raceIds: "202605040711" });
+    test.each(["2", "9", "10", "60", "abc", "4.5", "-4", "０"])("rejects the number of horses %j", (value) => {
+        const errors = errorsOf({ aiBox: ON, boxHorses: value, raceIds: "202605040711" });
         expect(errors).toHaveLength(1);
-        expect(errors[0]).toContain("--box-max-tickets");
+        expect(errors[0]).toContain("Box の頭数は 3 〜 8");
     });
 
-    test("never lets a ticket limit become an option", () => {
-        const errors = errorsOf({ aiBox: ON, boxMaxTickets: "--debug", raceIds: "202605040711" });
-        expect(errors[0]).toContain("--box-max-tickets");
+    test("never lets the number of horses become an option", () => {
+        const errors = errorsOf({ aiBox: ON, boxHorses: "--debug", raceIds: "202605040711" });
+        expect(errors[0]).toContain("Box の頭数は 3 〜 8");
+    });
+
+    test("ignores the number of horses unless the AI box is chosen, because a browser always sends the select", () => {
+        const operation = parsed({ updateRaceList: ON, boxHorses: "5" });
+        expect(operation.commandLine).toBe("--update-race-list");
+        expect(operation.args).toMatchObject({ boxHorses: null, boxMaxTickets: 60 });
+        // 他の処理では 値が誤りでも止めない
+        expect(parsed({ train: ON, boxHorses: "99" }).commandLine).toBe("--train");
+    });
+
+    test("reads the number of horses of a browser submission with the AI box chosen", () => {
+        const operation = parsed({ aiBox: ON, boxHorses: "7", raceIds: "202605040711" });
+        expect(operation.args).toMatchObject({ boxHorses: 7, boxMaxTickets: 210 });
+        expect(operation.commandLine).toBe("--ai-box --box-horses=7 -- 202605040711");
+    });
+
+    test("takes the number of horses from the form, and drops the old ticket limit field", () => {
+        expect(collectFormValues({ boxMaxTickets: "24", boxHorses: "4" })).toEqual({ boxHorses: "4" });
     });
 });
 
@@ -323,7 +363,6 @@ describe("buildOperationDefaults", () => {
             minPopularity: cli.valueCriteria.minPopularity,
             maxRank: cli.valueCriteria.maxModelRank,
             minExpectedValue: cli.valueCriteria.minExpectedValue,
-            boxMaxTickets: cli.boxMaxTickets,
             tempDirectory: "./temp",
         });
     });

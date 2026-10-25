@@ -15,7 +15,7 @@ import {
     MAX_AI_BOX_RACES,
     parseCliArguments,
 } from "../cli-args.ts";
-import { DEFAULT_BOX_MAX_TICKETS } from "../predict/trifecta.ts";
+import { MAX_BOX_HORSES, MIN_BOX_HORSES } from "../predict/trifecta.ts";
 import { DEFAULT_VALUE_CRITERIA } from "../predict/value.ts";
 import {
     FLAG_FIELDS,
@@ -36,6 +36,7 @@ import {
 const RACE_LIST_FILE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const RACE_ID_PATTERN = /^\d{1,18}$/;
 const PERIOD_PATTERN = /^\d{1,3}$/;
+const BOX_HORSES_PATTERN = /^\d$/;
 
 // 値をそのまま --名前=値 の形で渡す入力欄(検証は parseCliArguments が行う)
 const PASS_THROUGH_OPTIONS: ReadonlyArray<{ field: TextField; option: string }> = [
@@ -45,7 +46,6 @@ const PASS_THROUGH_OPTIONS: ReadonlyArray<{ field: TextField; option: string }> 
     { field: "minPopularity", option: "--min-popularity" },
     { field: "maxRank", option: "--max-rank" },
     { field: "minEv", option: "--min-ev" },
-    { field: "boxMaxTickets", option: "--box-max-tickets" },
 ];
 
 // 実行する順(operations.ts の実行順と同じ)
@@ -87,7 +87,6 @@ export function buildOperationDefaults(tempDirectory: string): OperationDefaults
         minPopularity: DEFAULT_VALUE_CRITERIA.minPopularity,
         maxRank: DEFAULT_VALUE_CRITERIA.maxModelRank,
         minExpectedValue: DEFAULT_VALUE_CRITERIA.minExpectedValue,
-        boxMaxTickets: DEFAULT_BOX_MAX_TICKETS,
         tempDirectory,
     };
 }
@@ -196,6 +195,17 @@ export function parseOperationForm(values: OperationFormValues): ParseOperationR
         }
     }
 
+    // Boxの頭数(空はAIにまかせる) 選択欄はブラウザが常に送るため -B のときだけ読む(他の処理の引数に載せず 値の誤りでも止めない)
+    const boxHorses = isOn("aiBox") ? textOf("boxHorses") : "";
+    if (boxHorses !== "") {
+        const horses = Number(boxHorses);
+        if (!BOX_HORSES_PATTERN.test(boxHorses) || horses < MIN_BOX_HORSES || horses > MAX_BOX_HORSES) {
+            errors.push(`Box の頭数は ${MIN_BOX_HORSES} 〜 ${MAX_BOX_HORSES} の整数で指定してください。`);
+        } else {
+            argv.push(`--box-horses=${horses}`);
+        }
+    }
+
     const rawRaceIds = values.raceIds ?? "";
     const raceIds = rawRaceIds.length > MAX_RACE_IDS_CHARS ? [] : splitRaceIds(rawRaceIds);
     if (rawRaceIds.length > MAX_RACE_IDS_CHARS || raceIds.length > MAX_RACE_IDS) {
@@ -212,7 +222,7 @@ export function parseOperationForm(values: OperationFormValues): ParseOperationR
         }
     }
 
-    // Boxの提案はレースごとにClaude APIを呼ぶため レースIDの指定を必須にして 件数を絞る
+    // Boxの提案はレースごとにClaude CLIを呼ぶため レースIDの指定を必須にして 件数を絞る
     if (isOn("aiBox") && (raceIds.length < 1 || raceIds.length > MAX_AI_BOX_RACES)) {
         errors.push(`3連単Boxの提案(-B)には、レース ID を 1 〜 ${MAX_AI_BOX_RACES} 件指定してください。`);
     }

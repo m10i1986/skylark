@@ -30,6 +30,7 @@ describe("parseCliArguments", () => {
             historySince: DEFAULT_HISTORY_SINCE,
             valueCriteria: DEFAULT_VALUE_CRITERIA,
             boxMaxTickets: 60,
+            boxHorses: null,
             raceIds: [],
         });
     });
@@ -153,6 +154,31 @@ describe("parseCliArguments", () => {
 
         test.each(["5", "337", "0", "-24", "2.5", "abc", ""])("rejects the ticket limit %p", (value) => {
             expect(() => parseCliArguments(["-B", `--box-max-tickets=${value}`, "1"])).toThrow(CliUsageError);
+        });
+
+        test("lets the AI choose the number of horses unless it is given", () => {
+            expect(parseCliArguments(["-B", "1"]).boxHorses).toBeNull();
+        });
+
+        test.each([
+            ["3", 6],
+            ["5", 60],
+            ["8", 336],
+        ])("makes the ticket limit that of a box of exactly %s horses (%i)", (horses, tickets) => {
+            const args = parseCliArguments(["-B", `--box-horses=${horses}`, "1"]);
+            expect(args.boxHorses).toBe(Number(horses));
+            expect(args.boxMaxTickets).toBe(tickets);
+            expect(parseCliArguments(["-B", "--box-horses", horses, "1"]).boxHorses).toBe(Number(horses));
+        });
+
+        test.each(["2", "9", "10", "0", "-5", "4.5", "abc", "", "٥"])("rejects the number of horses %p", (value) => {
+            expect(() => parseCliArguments(["-B", `--box-horses=${value}`, "1"])).toThrow(CliUsageError);
+        });
+
+        test("does not allow the number of horses and the ticket limit together", () => {
+            expect(() => parseCliArguments(["-B", "--box-horses=5", "--box-max-tickets=60", "1"])).toThrow(
+                /not allowed with argument --box-max-tickets/,
+            );
         });
     });
 });

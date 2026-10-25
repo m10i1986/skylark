@@ -122,6 +122,22 @@ describe("GET /operations", () => {
         expect(html).toContain(TEMP_DIRECTORY);
     });
 
+    test("offers the number of horses of the box from 3 to 8, and AI choice (the default) first", async () => {
+        const html = await (await harness.app.request("/operations", { headers: GET_HEADERS })).text();
+        const select = /<select[^>]*name="boxHorses"[^>]*>.*?<\/select>/s.exec(html)?.[0] ?? "";
+        expect(select).not.toBe("");
+        const options = [...select.matchAll(/<option([^>]*)>([^<]*)<\/option>/g)].map((match) => ({
+            value: /value="([^"]*)"/.exec(match[1] ?? "")?.[1],
+            text: match[2],
+            isSelected: (match[1] ?? "").includes("selected"),
+        }));
+        expect(options.map((option) => option.value)).toEqual(["", "3", "4", "5", "6", "7", "8"]);
+        expect(options.filter((option) => option.isSelected).map((option) => option.value)).toEqual([""]);
+        expect(options[0]?.text).toBe("AIにおまかせ (最大5頭 60点)");
+        expect(options.find((option) => option.value === "5")?.text).toBe("5頭 (60点 6,000円)");
+        expect(options.find((option) => option.value === "8")?.text).toBe("8頭 (336点 33,600円)");
+    });
+
     test("has an input for every field the server accepts", async () => {
         const html = await (await harness.app.request("/operations", { headers: GET_HEADERS })).text();
         for (const name of [...FLAG_FIELDS, ...TEXT_FIELDS]) {
@@ -204,16 +220,17 @@ describe("POST /operations", () => {
         });
     });
 
-    test("starts an AI box job with the ticket limit of the form", async () => {
+    test("starts an AI box job with the number of horses of the form", async () => {
         const response = await postOperations(harness, {
             aiBox: FLAG_ON,
-            boxMaxTickets: "24",
+            boxHorses: "4",
             raceIds: "202605040711",
         });
         jobIdOf(response);
         await harness.runner.whenIdle();
         expect(harness.executed[0]).toMatchObject({
             isAiBox: true,
+            boxHorses: 4,
             boxMaxTickets: 24,
             raceIds: ["202605040711"],
         });
@@ -243,6 +260,22 @@ describe("POST /operations", () => {
         expect(html).toContain('checked=""');
         expect(harness.executed).toHaveLength(0);
         expect(harness.runner.list()).toHaveLength(0);
+    });
+
+    test("keeps the chosen number of horses when the form is shown again with errors", async () => {
+        const response = await postOperations(harness, { aiBox: FLAG_ON, boxHorses: "7" });
+        expect(response.status).toBe(400);
+        const select = /<select[^>]*name="boxHorses"[^>]*>.*?<\/select>/s.exec(await response.text())?.[0] ?? "";
+        expect(/<option[^>]*selected[^>]*value="7"|<option[^>]*value="7"[^>]*selected/.test(select)).toBe(true);
+    });
+
+    test("falls back to the AI choice when the shown value is not a choice", async () => {
+        const response = await postOperations(harness, { aiBox: FLAG_ON, boxHorses: "99" });
+        expect(response.status).toBe(400);
+        const html = await response.text();
+        expect(html).toContain("Box の頭数は 3 〜 8 の整数で指定してください。");
+        const select = /<select[^>]*name="boxHorses"[^>]*>.*?<\/select>/s.exec(html)?.[0] ?? "";
+        expect(/<option[^>]*selected[^>]*value=""|<option[^>]*value=""[^>]*selected/.test(select)).toBe(true);
     });
 
     test("escapes the input it shows again", async () => {

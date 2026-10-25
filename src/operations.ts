@@ -59,7 +59,7 @@ export type OperationDependencies = {
     acquireNetkeibaClient?: (env: Environment) => Promise<NetkeibaClientLease>;
     // 指定すると特徴量の進捗を標準エラー出力ではなくここへ1行ずつ渡す
     writeProgressLine?: (line: string) => void;
-    // 省略時は環境変数の設定でClaude APIを呼ぶ(-B のときだけ呼ぶ)
+    // 省略時は環境変数の設定でClaude CLIを呼ぶ(-B のときだけ呼ぶ)
     createBoxSelector?: (env: Environment) => Promise<BoxSelector> | BoxSelector;
 };
 
@@ -99,16 +99,16 @@ export async function acquireNetkeibaClientFromEnvironment(env: Environment): Pr
 }
 
 /**
- * 環境変数の設定でClaude APIを呼ぶ選定処理を作る
+ * 環境変数の設定でClaude CLIを呼ぶ選定処理を作る
  *
- * SDKは重いため この時点で読み込む
+ * -B のときだけ使うため この時点で読み込む
  *
  * @param env - 環境変数
  * @returns 3連単Boxの選定を依頼する処理
  */
 export async function createBoxSelectorFromEnvironment(env: Environment): Promise<BoxSelector> {
-    const { createAnthropicBoxSelectorFromEnvironment } = await import("./predict/anthropic-box.ts");
-    return createAnthropicBoxSelectorFromEnvironment(env);
+    const { createClaudeCliBoxSelectorFromEnvironment } = await import("./predict/claude-cli-box.ts");
+    return createClaudeCliBoxSelectorFromEnvironment(env);
 }
 
 // エラー応答の本文を一覧として読まないよう 2xx以外は例外にする
@@ -198,7 +198,13 @@ async function proposeBoxesAndPrint(
     const skippedRaceIds = [...prediction.skippedRaceIds];
     const printReport = (): void => {
         dependencies.output(
-            formatBoxProposals({ date: prediction.date, proposals, skippedRaceIds, maxTickets: args.boxMaxTickets }),
+            formatBoxProposals({
+                date: prediction.date,
+                proposals,
+                skippedRaceIds,
+                maxTickets: args.boxMaxTickets,
+                fixedHorses: args.boxHorses,
+            }),
         );
     };
     try {
@@ -208,7 +214,13 @@ async function proposeBoxesAndPrint(
                 information == null
                     ? null
                     : await proposeBox(
-                          { prediction: racePrediction, information, maxTickets: args.boxMaxTickets },
+                          {
+                              prediction: racePrediction,
+                              information,
+                              maxTickets: args.boxMaxTickets,
+                              // 頭数を指定した場合は その頭数ちょうどのBoxだけを候補にする
+                              ...(args.boxHorses == null ? {} : { minHorses: args.boxHorses }),
+                          },
                           selector,
                           logger,
                       );

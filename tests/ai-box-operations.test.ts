@@ -275,6 +275,50 @@ describe("runOperations: -B (AI box)", () => {
         expect(saved?.maxTickets).toBe(24);
     });
 
+    test("makes the box of exactly the horses given with --box-horses", async () => {
+        await seedModelAndHistory();
+        const raceId = jraRaceId(1);
+        const { requests, selector } = scriptedSelector([CHOICE([1, 2, 3, 4, 5])]);
+        const harness = harnessWith(fakeClient([{ raceId, name: "本日のS", horses: sixHorses() }]), selector);
+
+        await harness.run(["-B", "--box-horses", "5", String(raceId)]);
+
+        expect(requests[0]?.user).toContain('"minHorses":5,"maxHorses":5,"maxTickets":60');
+        const [saved] = await repository.listBoxProposalsWithResults(TODAY);
+        expect(saved).toMatchObject({ source: "ai", horseNumbers: [1, 2, 3, 4, 5], maxTickets: 60 });
+        expect(harness.outputs[0]).toContain("3連単Boxの提案");
+        expect(harness.outputs[0]).toContain("5頭 60点(6,000円)");
+        expect(harness.outputs[0]).not.toContain("点数の上限60点");
+    });
+
+    test("does not use an answer with fewer horses than --box-horses", async () => {
+        await seedModelAndHistory();
+        const raceId = jraRaceId(1);
+        // 5頭を指定したのに4頭を返す
+        const { selector } = scriptedSelector([CHOICE([1, 2, 3, 4])]);
+        const harness = harnessWith(fakeClient([{ raceId, name: "本日のS", horses: sixHorses() }]), selector);
+
+        await harness.run(["-B", "--box-horses=5", String(raceId)]);
+
+        const [saved] = await repository.listBoxProposalsWithResults(TODAY);
+        expect(saved).toMatchObject({ source: "fallback", aiModel: null, horseNumbers: [1, 2, 3, 4, 5] });
+        expect(harness.outputs[0]).toContain("AIを使えず");
+    });
+
+    test("skips the race when fewer horses run than --box-horses", async () => {
+        await seedModelAndHistory();
+        const raceId = jraRaceId(1);
+        const { requests, selector } = scriptedSelector([CHOICE([1, 2, 3, 4, 5, 6, 7])]);
+        const harness = harnessWith(fakeClient([{ raceId, name: "本日のS", horses: sixHorses() }]), selector);
+
+        await harness.run(["-B", "--box-horses=7", String(raceId)]);
+
+        expect(requests).toHaveLength(0);
+        expect(await repository.listBoxProposalsWithResults(TODAY)).toHaveLength(0);
+        expect(harness.outputs[0]).toContain("提案できたレースはありません");
+        expect(harness.logger.ofLevel("warning").some((message) => message.includes("no box can be made"))).toBe(true);
+    });
+
     test("switches to the best hit probability box when the answer is invalid, and says so", async () => {
         await seedModelAndHistory();
         const raceId = jraRaceId(1);

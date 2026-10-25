@@ -323,6 +323,8 @@ export type BoxProposalReport = {
     skippedRaceIds: readonly number[];
     // 点数の上限
     maxTickets: number;
+    // 頭数を指定した場合(その頭数ちょうどのBox)の頭数 指定しないならnull
+    fixedHorses?: number | null;
 };
 
 /**
@@ -332,9 +334,13 @@ export type BoxProposalReport = {
  * @returns 表示する文章
  */
 export function formatBoxProposals(report: BoxProposalReport): string {
-    const { date, proposals, skippedRaceIds, maxTickets } = report;
+    const { date, proposals, skippedRaceIds, maxTickets, fixedHorses = null } = report;
+    const condition =
+        fixedHorses == null
+            ? `点数の上限${maxTickets}点(${yen(maxTickets * TICKET_PRICE_YEN)})`
+            : `${fixedHorses}頭 ${maxTickets}点(${yen(maxTickets * TICKET_PRICE_YEN)})`;
     const lines = [
-        `3連単Boxの提案 ${date} 点数の上限${maxTickets}点(${yen(maxTickets * TICKET_PRICE_YEN)})`,
+        `3連単Boxの提案 ${date} ${condition}`,
         "  的中確率は、モデルの勝率から Harville 式で求めた目安です(強い馬ほど上位に偏る仮定で、実際とはずれます)。",
         "",
     ];

@@ -99,12 +99,13 @@ function informationOf(horses: HorseEntry[]): RaceInformation {
 }
 
 function inputOf(
-    overrides: { prediction?: RacePrediction; horses?: HorseEntry[]; maxTickets?: number } = {},
+    overrides: { prediction?: RacePrediction; horses?: HorseEntry[]; maxTickets?: number; minHorses?: number } = {},
 ): BoxProposalInput {
     return {
         prediction: overrides.prediction ?? predictionOf(),
         information: informationOf(overrides.horses ?? Array.from({ length: 8 }, (_, index) => horseEntry(index + 1))),
         maxTickets: overrides.maxTickets ?? 60,
+        ...(overrides.minHorses == null ? {} : { minHorses: overrides.minHorses }),
     };
 }
 
@@ -260,6 +261,70 @@ describe("parseBoxChoice", () => {
         ["注意点が無い", { horseNumbers: [1, 2, 3], reason: "理由" }],
     ])("%s は拒否する", (_label, value) => {
         expect(() => parseBoxChoice(value, starters, 5)).toThrow(InvalidBoxChoiceError);
+    });
+});
+
+describe("parseBoxChoice with a fixed number of horses", () => {
+    const starters = [1, 2, 3, 4, 5, 6, 7, 8];
+    const choiceOf = (horseNumbers: number[]) => ({ horseNumbers, reason: "理由", caution: "" });
+
+    test("頭数の下限と上限が同じなら その頭数ちょうどだけを通す", () => {
+        expect(parseBoxChoice(choiceOf([1, 2, 3, 4, 5]), starters, 5, 5).horseNumbers).toEqual([1, 2, 3, 4, 5]);
+        expect(() => parseBoxChoice(choiceOf([1, 2, 3, 4]), starters, 5, 5)).toThrow(/exactly 5 horses/);
+        expect(() => parseBoxChoice(choiceOf([1, 2, 3, 4, 5, 6]), starters, 5, 5)).toThrow(InvalidBoxChoiceError);
+    });
+
+    test("下限を省略すると3頭から上限までを通す", () => {
+        expect(parseBoxChoice(choiceOf([1, 2, 3]), starters, 5).horseNumbers).toEqual([1, 2, 3]);
+    });
+});
+
+describe("proposeBox with a fixed number of horses", () => {
+    const fiveHorses = { horseNumbers: [1, 2, 3, 4, 5], reason: "上位5頭", caution: "" };
+
+    test("その頭数ちょうどの候補だけをAIに見せ 頭数を固定の制約として伝える", async () => {
+        const { requests, selector } = fakeSelector(fiveHorses);
+
+        const proposal = await proposeBox(inputOf({ maxTickets: 60, minHorses: 5 }), selector, createRecordingLogger());
+
+        const data = raceDataOf(requests[0] as BoxSelectionRequest);
+        expect(data.constraints).toMatchObject({ minHorses: 5, maxHorses: 5, maxTickets: 60 });
+        expect(data.candidates.every((candidate) => candidate.horseCount === 5)).toBe(true);
+        expect(proposal).toMatchObject({ source: "ai", horseNumbers: [1, 2, 3, 4, 5], ticketCount: 60 });
+    });
+
+    test("AIが指定より少ない頭数を選んだら 応答を使わず その頭数で的中確率が最も高いBoxにする", async () => {
+        // 指定は5頭 AIは4頭を選ぶ(上限としてなら通るが 固定では通さない)
+        const { selector } = fakeSelector({ horseNumbers: [1, 2, 3, 4], reason: "4頭で十分", caution: "" });
+        const logger = createRecordingLogger();
+
+        const proposal = await proposeBox(inputOf({ maxTickets: 60, minHorses: 5 }), selector, logger);
+
+        expect(proposal).toMatchObject({ source: "fallback", aiModel: null, horseNumbers: [1, 2, 3, 4, 5] });
+        expect(proposal?.horseNumbers).toEqual(proposal?.baseline.horseNumbers);
+        expect(proposal?.reason).toContain("exactly 5 horses");
+        expect(logger.ofLevel("warning").some((message) => message.includes("AI box was not used"))).toBe(true);
+    });
+
+    test("頭数を指定しなければ 点数の上限内で頭数もAIが選ぶ(4頭を選べる)", async () => {
+        const { selector } = fakeSelector({ horseNumbers: [1, 2, 3, 4], reason: "4頭", caution: "" });
+
+        const proposal = await proposeBox(inputOf({ maxTickets: 60 }), selector, createRecordingLogger());
+
+        expect(proposal).toMatchObject({ source: "ai", horseNumbers: [1, 2, 3, 4] });
+    });
+
+    test("出走頭数が指定の頭数に満たなければ 提案しない(AIも呼ばない)", async () => {
+        const { requests, selector } = fakeSelector(fiveHorses);
+        const input = inputOf({
+            maxTickets: 336,
+            minHorses: 8,
+            prediction: predictionOf([30, 20, 15, 10, 8, 6]),
+            horses: Array.from({ length: 6 }, (_, index) => horseEntry(index + 1)),
+        });
+
+        expect(await proposeBox(input, selector, createRecordingLogger())).toBeNull();
+        expect(requests).toHaveLength(0);
     });
 });
 

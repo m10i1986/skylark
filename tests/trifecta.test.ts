@@ -169,6 +169,36 @@ describe("candidateBoxes", () => {
         }
     });
 
+    test("頭数の下限を指定すると それより少ない頭数の候補は出さない", () => {
+        const candidates = candidateBoxes(horseNumbers, probabilities, { maxTickets: 60, perSize: 2, minHorses: 4 });
+        expect(candidates.map((candidate) => candidate.horseNumbers.length)).toEqual([4, 4, 5, 5]);
+    });
+
+    test("頭数の下限と点数の上限が同じ頭数なら その頭数ちょうどの候補だけを返す", () => {
+        const candidates = candidateBoxes(horseNumbers, probabilities, {
+            maxTickets: boxTicketCount(5),
+            perSize: 3,
+            minHorses: 5,
+        });
+        expect(candidates).toHaveLength(3);
+        expect(candidates.every((candidate) => candidate.horseNumbers.length === 5)).toBe(true);
+        // 勝率の上位5頭が最良
+        expect(candidates[0]?.horseNumbers).toEqual([1, 2, 3, 4, 5]);
+    });
+
+    test("出走頭数か点数の上限が頭数の下限に満たなければ 空を返す", () => {
+        expect(
+            candidateBoxes([1, 2, 3, 4], normalized([4, 3, 2, 1]), { maxTickets: 336, perSize: 2, minHorses: 5 }),
+        ).toEqual([]);
+        expect(candidateBoxes(horseNumbers, probabilities, { maxTickets: 24, perSize: 2, minHorses: 5 })).toEqual([]);
+    });
+
+    test.each([2, 9, 4.5, Number.NaN])("頭数の下限 %p は範囲外として拒否する", (minHorses) => {
+        expect(() => candidateBoxes(horseNumbers, probabilities, { maxTickets: 60, perSize: 2, minHorses })).toThrow(
+            RangeError,
+        );
+    });
+
     test("同じ頭数の中では的中確率の高い順に並ぶ", () => {
         const candidates = candidateBoxes(horseNumbers, probabilities, { maxTickets: 24, perSize: 3 });
         const fourHorse = candidates.filter((candidate) => candidate.horseNumbers.length === 4);

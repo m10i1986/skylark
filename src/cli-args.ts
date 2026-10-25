@@ -32,8 +32,10 @@ export type CliArguments = {
     historySince: string;
     // 「勝率が高いのに人気がない馬」の抽出条件
     valueCriteria: ValueCriteria;
-    // 3連単Boxの点数の上限(-B)
+    // 3連単Boxの点数の上限(-B) 頭数を指定した場合(boxHorses)は その頭数のBoxの点数
     boxMaxTickets: number;
+    // 3連単Boxの頭数(-B) 指定するとその頭数ちょうどのBoxにする nullならAIが点数の上限内で頭数も選ぶ
+    boxHorses: number | null;
     raceIds: string[];
 };
 
@@ -49,7 +51,7 @@ export const DEFAULT_RACE_LIST_FILE = "race_list.txt";
 /** 一覧を遡る月数の既定値 */
 export const DEFAULT_PERIOD_OF_MONTHS = 12;
 
-/** 一度に3連単Boxを提案できるレース数の上限 レースごとにClaude APIを呼び 料金がかかるため */
+/** 一度に3連単Boxを提案できるレース数の上限 レースごとにClaude CLIを呼び 時間と利用枠を使うため */
 export const MAX_AI_BOX_RACES = 12;
 
 /** コマンドライン引数が不正であることを表す */
@@ -65,7 +67,7 @@ export const USAGE = `usage: cli.ts [-h] [--temp TEMP] [--race-list-file RACE_LI
               [--period-of-months PERIOD_OF_MONTHS] [--rebuild-all-tables]
               [-Rf] [-U] [-S] [-F] [-T] [-P] [-B] [--report] [--date DATE]
               [--history-since DATE] [--min-odds N] [--min-popularity N]
-              [--max-rank N] [--min-ev N] [--box-max-tickets N]
+              [--max-rank N] [--min-ev N] [--box-max-tickets N | --box-horses N]
               [--verbose] [--debug]
               [race_id ...]
 
@@ -93,7 +95,7 @@ options:
   -P, --predict         predict today's central races and extract horses whose
                         win probability is high but popularity is low(default: False)
   -B, --ai-box          ask Claude to pick a trifecta box for the given races (predicts them first;
-                        needs ANTHROPIC_API_KEY, billed per race)(default: False)
+                        runs the claude CLI per race, so it must be logged in)(default: False)
   --report              compare saved predictions with the results of --date(default: False)
   --date DATE           date for --report, YYYY-MM-DD(default: today)
   --history-since DATE  first date of the past results used by -T and -P(default: 2025-01-01)
@@ -101,7 +103,10 @@ options:
   --min-popularity N    pick: popularity rank N or lower, a larger number is less popular(default: 4)
   --max-rank N          pick: model win probability rank N or higher(default: 5)
   --min-ev N            pick: expected value (win probability x odds) at least N, 0 disables(default: 1)
-  --box-max-tickets N   -B: upper limit of tickets of the box, 6 to 336 (3 to 8 horses)(default: 60)
+  --box-max-tickets N   -B: upper limit of tickets of the box, 6 to 336 (3 to 8 horses); the AI also picks
+                        the number of horses within it(default: 60)
+  --box-horses N        -B: make the box of exactly N horses, 3 to 8; the AI only picks which horses
+                        (cannot be used with --box-max-tickets)
   --verbose             show every runner of every race with -P(default: False)
   --debug               Debug mode(default: False)
 `;
@@ -141,10 +146,18 @@ export function parseCliArguments(argv: readonly string[]): CliArguments {
         minExpectedValue: parseNumberOption("--min-ev", values["min-ev"], 0),
     };
     const date = values.date == null ? null : parseDateOption("--date", values.date);
-    const boxMaxTickets = parseBoxMaxTickets(values["box-max-tickets"]);
+    const boxHorses = values["box-horses"] == null ? null : parseBoxHorses(values["box-horses"]);
+    if (boxHorses != null && values["box-max-tickets"] != null) {
+        throw new CliUsageError("argument --box-horses: not allowed with argument --box-max-tickets");
+    }
+    // 頭数を指定した場合の点数の上限は その頭数のBoxの点数
+    const boxMaxTickets =
+        boxHorses == null
+            ? parseBoxMaxTickets(values["box-max-tickets"] ?? String(DEFAULT_BOX_MAX_TICKETS))
+            : boxTicketCount(boxHorses);
     if (values["ai-box"] && (positionals.length < 1 || positionals.length > MAX_AI_BOX_RACES)) {
         throw new CliUsageError(
-            `argument -B: specify 1 to ${MAX_AI_BOX_RACES} race ids (each race calls the Claude API)`,
+            `argument -B: specify 1 to ${MAX_AI_BOX_RACES} race ids (each race runs the Claude CLI)`,
         );
     }
 
@@ -168,8 +181,20 @@ export function parseCliArguments(argv: readonly string[]): CliArguments {
         historySince: parseDateOption("--history-since", values["history-since"]),
         valueCriteria,
         boxMaxTickets,
+        boxHorses,
         raceIds: positionals,
     };
+}
+
+// 3頭から8頭までの頭数
+function parseBoxHorses(text: string): number {
+    const trimmed = text.trim();
+    if (!/^\d$/.test(trimmed) || Number(trimmed) < MIN_BOX_HORSES || Number(trimmed) > MAX_BOX_HORSES) {
+        throw new CliUsageError(
+            `argument --box-horses: must be an integer from ${MIN_BOX_HORSES} to ${MAX_BOX_HORSES}: '${text}'`,
+        );
+    }
+    return Number(trimmed);
 }
 
 // 3頭(6点)から8頭(336点)までの点数
@@ -234,7 +259,8 @@ function parseWithSchema(args: string[]) {
             "min-popularity": { type: "string", default: String(DEFAULT_VALUE_CRITERIA.minPopularity) },
             "max-rank": { type: "string", default: String(DEFAULT_VALUE_CRITERIA.maxModelRank) },
             "min-ev": { type: "string", default: String(DEFAULT_VALUE_CRITERIA.minExpectedValue) },
-            "box-max-tickets": { type: "string", default: String(DEFAULT_BOX_MAX_TICKETS) },
+            "box-max-tickets": { type: "string" },
+            "box-horses": { type: "string" },
             debug: { type: "boolean", default: false },
             help: { type: "boolean", short: "h", default: false },
         },

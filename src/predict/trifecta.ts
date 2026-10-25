@@ -149,6 +149,8 @@ export type CandidateOptions = {
     maxTickets: number;
     // 頭数ごとに残す候補の数
     perSize: number;
+    // 頭数の下限 省略すると3頭 点数の上限と同じ頭数にすると その頭数ちょうどの候補だけになる
+    minHorses?: number;
 };
 
 /**
@@ -156,9 +158,9 @@ export type CandidateOptions = {
  *
  * @param horseNumbers - 出走馬の馬番
  * @param probabilities - 出走馬ごとの勝率(horseNumbersと同じ並び 合計1)
- * @param options - 点数の上限と 頭数ごとに残す候補の数
- * @returns 頭数の少ない順 同じ頭数の中では的中確率の高い順 点数の上限で3頭も作れない場合は空
- * @throws {RangeError} 馬番と勝率の長さが違う または候補の数が1未満の場合
+ * @param options - 点数の上限と 頭数ごとに残す候補の数と 頭数の下限
+ * @returns 頭数の少ない順 同じ頭数の中では的中確率の高い順 頭数の下限に満たない(点数の上限や出走頭数のため)場合は空
+ * @throws {RangeError} 馬番と勝率の長さが違う 候補の数が1未満 頭数の下限が範囲外の場合
  */
 export function candidateBoxes(
     horseNumbers: readonly number[],
@@ -171,8 +173,12 @@ export function candidateBoxes(
     if (!Number.isInteger(options.perSize) || options.perSize < 1) {
         throw new RangeError("perSize must be a positive integer");
     }
+    const minHorses = options.minHorses ?? MIN_BOX_HORSES;
+    if (!Number.isInteger(minHorses) || minHorses < MIN_BOX_HORSES || minHorses > MAX_BOX_HORSES) {
+        throw new RangeError(`minHorses must be an integer from ${MIN_BOX_HORSES} to ${MAX_BOX_HORSES}`);
+    }
     const largest = maxBoxHorseCount(options.maxTickets, horseNumbers.length);
-    if (largest === 0) {
+    if (largest < minHorses) {
         return [];
     }
 
@@ -183,7 +189,7 @@ export function candidateBoxes(
         .slice(0, CANDIDATE_POOL_SIZE);
 
     const candidates: BoxCandidate[] = [];
-    for (let horses = MIN_BOX_HORSES; horses <= Math.min(largest, pool.length); horses++) {
+    for (let horses = minHorses; horses <= Math.min(largest, pool.length); horses++) {
         const kept: BoxCandidate[] = [];
         forEachCombination(pool.length, horses, (indices) => {
             const members = indices.map((poolIndex) => pool[poolIndex]);

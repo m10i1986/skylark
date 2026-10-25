@@ -28,7 +28,7 @@ import {
     type TextField,
 } from "./operation-fields.ts";
 import { TerminalText } from "./terminal-text.tsx";
-import { type Notice, NoticeBox, SiteNav } from "./views.tsx";
+import { BoxHorsesSelect, type Notice, NoticeBox, SiteNav } from "./views.tsx";
 
 /** 操作画面の描画に必要な値 JSONにできる値だけを持つ */
 export type OperationsPageProps = {
@@ -236,7 +236,7 @@ export function OperationsPage(props: OperationsPageProps): ReactNode {
                         <CheckboxField
                             name="aiBox"
                             label="3連単Boxの提案 (-B, --ai-box)"
-                            description="指定したレースを予測し、AI(Claude)に3連単Boxで買う馬を選ばせます。レースごとに Claude API を呼ぶため料金がかかります(ANTHROPIC_API_KEY が必要)。レース ID の指定が必須で、1 回に 12 件までです。"
+                            description="指定したレースを予測し、AI(Claude)に3連単Boxで買う馬を選ばせます。レースごとに Claude CLI(claude)を呼び、Claude の利用枠を消費します(CLI のログインが必要)。レース ID の指定が必須で、1 回に 12 件までです。"
                             values={values}
                         />
                         <CheckboxField
@@ -327,14 +327,18 @@ export function OperationsPage(props: OperationsPageProps): ReactNode {
                         <div>
                             <h3 className="mb-3 text-sm font-medium">3連単Box (-B)</h3>
                             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                                <InputField
-                                    name="boxMaxTickets"
-                                    label="点数の上限 (--box-max-tickets)"
-                                    hint="6 〜 336。3頭=6点、4頭=24点、5頭=60点、6頭=120点(1点100円)"
-                                    placeholder={String(defaults.boxMaxTickets)}
-                                    inputMode="numeric"
-                                    values={values}
-                                />
+                                <div className="grid gap-2">
+                                    <Label htmlFor="field-boxHorses">Box の頭数 (--box-horses)</Label>
+                                    <BoxHorsesSelect
+                                        id="field-boxHorses"
+                                        selectedHorses={values.boxHorses == null ? null : Number(values.boxHorses)}
+                                    />
+                                    <p className="text-xs text-muted-foreground">
+                                        頭数を選ぶと、その頭数ちょうどの Box にします(AI は入れる馬だけを選びます)。「AI
+                                        におまかせ」は、点数の上限(--box-max-tickets、既定は 60 点)の範囲で AI
+                                        が頭数も選びます。1点100円
+                                    </p>
+                                </div>
                             </div>
                         </div>
 

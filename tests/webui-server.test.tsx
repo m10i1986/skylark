@@ -452,14 +452,55 @@ describe("GET / AI box button", () => {
         expect(operationFormWith(html, "aiBox")).toBeNull();
     });
 
-    test("offers the AI box for the displayed race, with a note about the cost", async () => {
+    test("offers the AI box for the displayed race, with a note about the usage", async () => {
         harness = createHarness({ today: "2025-07-06", hasOperations: true });
         const form = operationFormWith(await get("/?date=20250706&race=1"), "aiBox");
         expect(form).not.toBeNull();
         expect(form).toContain("このレースの3連単Boxを AI に提案させる");
-        expect(form).toContain("料金がかかります");
+        expect(form).toContain("利用枠を消費します");
         expect(form).not.toContain('disabled=""');
         expect(hiddenFields(form ?? "")).toEqual({ aiBox: "1", raceIds: "209901010102" });
+    });
+
+    test("lets the number of horses of the box be chosen next to the button, AI choice by default", async () => {
+        harness = createHarness({ today: "2025-07-06", hasOperations: true });
+        const form = operationFormWith(await get("/?date=20250706&race=1"), "aiBox") ?? "";
+        const select = /<select[^>]*name="boxHorses"[^>]*>.*?<\/select>/s.exec(form)?.[0] ?? "";
+        expect(select).not.toBe("");
+        expect(select).not.toContain('disabled=""');
+        const values = [...select.matchAll(/<option([^>]*)>/g)].map(
+            (match) => /value="([^"]*)"/.exec(match[1] ?? "")?.[1],
+        );
+        expect(values).toEqual(["", "3", "4", "5", "6", "7", "8"]);
+        expect(/<option[^>]*selected[^>]*value=""|<option[^>]*value=""[^>]*selected/.test(select)).toBe(true);
+        expect(form).toContain("Box の頭数");
+        // 予測のボタンの横には出さない
+        expect(predictFormOf(await get("/?date=20250706&race=1"))).not.toContain("boxHorses");
+    });
+
+    test("starts an AI box job with the chosen number of horses", async () => {
+        harness = createHarness({ today: "2025-07-06", hasOperations: true });
+        const form = operationFormWith(await get("/?date=20250706&race=1"), "aiBox");
+        const response = await harness.app.request("/operations", {
+            method: "POST",
+            headers: FORM_HEADERS,
+            body: new URLSearchParams({ ...hiddenFields(form ?? ""), boxHorses: "7" }).toString(),
+        });
+        expect(response.status).toBe(303);
+        await harness.runner.whenIdle();
+        expect(harness.executed[0]).toMatchObject({
+            isAiBox: true,
+            boxHorses: 7,
+            boxMaxTickets: 210,
+            raceIds: ["209901010102"],
+        });
+    });
+
+    test("disables the number of horses together with the button when the race cannot be predicted", async () => {
+        harness = createHarness({ today: "2025-07-01", hasOperations: true });
+        const form = operationFormWith(await get(), "aiBox") ?? "";
+        const select = /<select[^>]*name="boxHorses"[^>]*>/s.exec(form)?.[0] ?? "";
+        expect(select).toContain('disabled=""');
     });
 
     test("shows every runner for the prediction button (verbose), and does not start the AI box from it", async () => {
@@ -472,12 +513,12 @@ describe("GET / AI box button", () => {
         });
     });
 
-    test("is disabled with the reason, and without the cost note, when the race cannot be predicted", async () => {
+    test("is disabled with the reason, and without the usage note, when the race cannot be predicted", async () => {
         harness = createHarness({ today: "2025-07-01", hasOperations: true });
         const form = operationFormWith(await get(), "aiBox");
         expect(form).toContain('disabled=""');
         expect(form).toContain("予測できるのは当日開催のレースだけです。");
-        expect(form).not.toContain("料金がかかります");
+        expect(form).not.toContain("利用枠を消費します");
     });
 
     test("starts an AI box job for the displayed race only", async () => {
