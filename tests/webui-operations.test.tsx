@@ -95,7 +95,7 @@ beforeEach(() => {
 describe("when operations are not provided", () => {
     test("has no operation routes and no navigation", async () => {
         const disabled = createHarness({ hasOperations: false });
-        for (const path of ["/operations", "/jobs/00000000-0000-4000-8000-000000000000"]) {
+        for (const path of ["/operations", "/jobs/00000000-0000-7000-8000-000000000000"]) {
             expect((await disabled.app.request(path, { headers: GET_HEADERS })).status).toBe(404);
         }
         const post = await postOperations(disabled, { report: FLAG_ON });
@@ -365,7 +365,14 @@ describe("GET /jobs/:id", () => {
     });
 
     test("answers 404 for unknown or malformed ids", async () => {
-        for (const id of ["00000000-0000-4000-8000-000000000000", "abc", "..%2F..%2Fetc", "1", "constructor"]) {
+        for (const id of [
+            "00000000-0000-7000-8000-000000000000",
+            "00000000-0000-4000-8000-000000000000",
+            "abc",
+            "..%2F..%2Fetc",
+            "1",
+            "constructor",
+        ]) {
             const response = await harness.app.request(`/jobs/${id}`, { headers: GET_HEADERS });
             expect(response.status).toBe(404);
         }
@@ -443,7 +450,7 @@ describe("GET /jobs/:id/events", () => {
     });
 
     test("answers 404 for unknown jobs", async () => {
-        const response = await harness.app.request("/jobs/00000000-0000-4000-8000-000000000000/events", {
+        const response = await harness.app.request("/jobs/00000000-0000-7000-8000-000000000000/events", {
             headers: GET_HEADERS,
         });
         expect(response.status).toBe(404);
@@ -552,7 +559,7 @@ describe("startWebUi: who can use the operations", () => {
         const server = startWebUi({ hostname: NON_LOOPBACK_HOST, port: 0 }, logger);
         try {
             expect(await statusOf(server.port, NON_LOOPBACK_HOST, "/operations")).toBe(404);
-            expect(await statusOf(server.port, NON_LOOPBACK_HOST, "/jobs/00000000-0000-4000-8000-000000000000")).toBe(
+            expect(await statusOf(server.port, NON_LOOPBACK_HOST, "/jobs/00000000-0000-7000-8000-000000000000")).toBe(
                 404,
             );
             const post = await fetch(`http://${NON_LOOPBACK_HOST}:${server.port}/operations`, {

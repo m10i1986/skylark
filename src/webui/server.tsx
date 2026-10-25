@@ -42,7 +42,7 @@ const DEFAULT_PORT = 8501;
 
 const LOOPBACK_HOSTNAMES: ReadonlySet<string> = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
 const RACE_ID_PATTERN = /^\d{1,18}$/;
-const JOB_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const JOB_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const AFTER_PATTERN = /^\d{1,12}$/;
 // 操作フォームの本文の上限 入力欄の上限(レースID)に余裕を足した値
 const OPERATION_BODY_LIMIT_BYTES = 64 * 1024;

@@ -229,7 +229,7 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
 
             makeRoomForNewJob();
             const record: JobRecord = {
-                id: crypto.randomUUID(),
+                id: Bun.randomUUIDv7(),
                 title: spec.title,
                 commandLine: spec.commandLine,
                 status: "running",

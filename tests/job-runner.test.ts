@@ -38,6 +38,19 @@ function startedId(result: ReturnType<ReturnType<typeof createJobRunner>["start"
 }
 
 describe("job lifecycle", () => {
+    test("issues UUIDv7 job ids that sort in start order", async () => {
+        const { runner } = setup();
+        const ids: string[] = [];
+        for (let index = 0; index < 3; index++) {
+            ids.push(startedId(runner.start(spec(async () => {}))));
+            await runner.whenIdle();
+        }
+        for (const id of ids) {
+            expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+        }
+        expect([...ids].sort()).toEqual(ids);
+    });
+
     test("runs a job and keeps its logs and report in order", async () => {
         const { runner } = setup();
         const id = startedId(
