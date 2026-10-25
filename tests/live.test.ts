@@ -9,6 +9,7 @@ import { sql } from "drizzle-orm";
 
 import { SkylarkCrud } from "../src/db/crud.ts";
 import { PredictionRepository } from "../src/db/prediction-repository.ts";
+import type { BoxProposal } from "../src/predict/ai-box.ts";
 import { FEATURE_NAMES, HistoryState } from "../src/predict/history.ts";
 import {
     formatLocalDate,
@@ -20,6 +21,7 @@ import {
 } from "../src/predict/live.ts";
 import type { ModelParameters } from "../src/predict/model.ts";
 import {
+    formatBoxProposals,
     formatBoxVerification,
     formatPredictions,
     formatTrainingReport,
@@ -551,6 +553,63 @@ describe("reports", () => {
         expect(text).toContain("発走前に取得した予測はありません");
         expect(text).toContain("後だけS");
         expect(text).not.toContain("-P で予測してください");
+    });
+
+    test("box proposals show the past result of the same box size next to the hit probability", () => {
+        const proposalOf = (baseRate: BoxProposal["baseRate"]): BoxProposal => ({
+            raceId: jraRaceId(1),
+            raceName: "東京1R テストS",
+            raceDate: TODAY,
+            postTime: "15:20",
+            capturedAt: NOW,
+            horseNumbers: [1, 2, 3, 4],
+            horses: [],
+            ticketCount: 24,
+            costYen: 2400,
+            hitProbability: 0.2817,
+            bestHitProbability: 0.2817,
+            baseline: { horseNumbers: [1, 2, 3, 4, 5], ticketCount: 60, costYen: 6000, hitProbability: 0.389 },
+            baseRate,
+            maxTickets: 60,
+            source: "ai",
+            reason: "理由",
+            caution: null,
+            aiModel: "claude-opus-5-5",
+        });
+        const baseRate = {
+            condition: "芝 16頭以上",
+            races: 3498,
+            topPopularityBoxes: [
+                { horses: 3, harvilleHitRate: 0.103, actualHitRate: 0.068 },
+                { horses: 4, harvilleHitRate: 0.237, actualHitRate: 0.174 },
+            ],
+            averageTopThreeByPopularity: {
+                popularity1to3: 1.5,
+                popularity4to6: 0.8,
+                popularity7to9: 0.4,
+                popularity10OrLower: 0.3,
+            },
+            longshotInTopThreeRate: 0.52,
+        };
+
+        const withRate = formatBoxProposals({
+            date: TODAY,
+            proposals: [proposalOf(baseRate)],
+            skippedRaceIds: [],
+            maxTickets: 60,
+        });
+        expect(withRate).toContain(
+            "過去の実績: 芝 16頭以上の3,498レースで、人気上位4頭のBoxの的中率は17.4%(Harville式では23.7%) 3着以内に人気7位以下が入った割合52%",
+        );
+        expect(withRate).toContain("実際より高く出ます");
+
+        const withoutRate = formatBoxProposals({
+            date: TODAY,
+            proposals: [proposalOf(null)],
+            skippedRaceIds: [],
+            maxTickets: 60,
+        });
+        expect(withoutRate).not.toContain("過去の実績:");
     });
 
     test("box verification stays silent without proposals and reports the races left out", () => {

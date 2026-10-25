@@ -10,8 +10,12 @@
 import type { BoxProposalRecord } from "../db/schema.ts";
 import type { Logger } from "../logger.ts";
 import type { RaceInformation } from "../webui/netkeiba-client.ts";
+import type { BoxBaseRate, BoxBaseRateLookup } from "./base-rates.ts";
+import type { HorseForm, PastRun } from "./form.ts";
 import type { RacePrediction } from "./live.ts";
 import {
+    alternativeBoxes,
+    type BoxAlternative,
     type BoxCandidate,
     boxHitProbabilityByNumbers,
     boxTicketCount,
@@ -23,7 +27,7 @@ import {
 
 // 頭数ごとにAIへ見せる候補の数
 const CANDIDATES_PER_SIZE = 3;
-const MAX_REASON_CHARS = 500;
+const MAX_REASON_CHARS = 600;
 const MAX_CAUTION_CHARS = 300;
 const MAX_CAUSE_CHARS = 200;
 // 発売前などで馬体重が発表されていないときにサイトが返す値
@@ -123,6 +127,8 @@ export type BoxProposal = {
     bestHitProbability: number;
     // 点数の上限内で最も的中確率が高いBox(AIを使わない場合の提案)
     baseline: BoxCandidate;
+    // 同じ条件の過去のレースの実績 求められなかった場合はnull
+    baseRate: BoxBaseRate | null;
     maxTickets: number;
     source: BoxProposalSource;
     reason: string;
@@ -139,6 +145,18 @@ export type BoxProposalInput = {
     maxTickets: number;
     // 頭数の下限 省略すると3頭 点数の上限に収まる最大の頭数と同じにすると その頭数ちょうどのBoxにする
     minHorses?: number;
+    // 出走馬ごとの過去走のまとめ(馬番から引く) 省略すると過去走を依頼に含めない
+    forms?: ReadonlyMap<number, HorseForm>;
+    // 同じ条件の過去のレースの実績を求める処理 省略すると実績を依頼に含めない
+    baseRates?: BoxBaseRateLookup;
+};
+
+/** 依頼に添える 候補表以外のデータ */
+export type BoxRequestContext = {
+    // 最良のBoxに入らない馬を入れた場合の最良のBox
+    alternatives?: readonly BoxAlternative[];
+    // 同じ条件の過去のレースの実績
+    baseRate?: BoxBaseRate | null;
 };
 
 const round4 = (value: number): number => Math.round(value * 10_000) / 10_000;
@@ -167,8 +185,21 @@ const SYSTEM_PROMPT = `あなたは中央競馬の分析を補助するアシス
 - 頭数を増やすと点数と購入額が急に増える(3頭=6点、4頭=24点、5頭=60点、6頭=120点)。増える的中確率に見合わない頭数の追加は避ける。
 - constraints.minHorses と constraints.maxHorses が同じ値のときは、頭数が指定されている。その頭数ちょうどにし、どの馬を入れるかだけを選ぶ。
 
+データの使い方
+- runners の marketWinProbability はオッズから求めた市場の勝率、modelWinProbability はそれを過去の成績で補正した勝率である。補正は小さく、順位は人気順とほぼ一致する。したがって candidates の最良の組み合わせは、人気の上位の馬を並べたものになる。人気順をなぞるだけの選択は、過去のデータを使ったことにならない。
+- runners の form が、馬ごとの過去走である。recentRuns は新しい順で、レース名(raceName の(GI)などが格)・条件・距離・馬場・出走頭数・着順・人気・上がり(lastPhaseRank が1なら最速)・着差を含む。career・sameSurface・nearDistance は、DBにある範囲の成績(starts=出走数、wins=1着、top3=3着以内)である。distanceChange は前走からの距離の増減(正は延長)、daysSinceLast は前走からの日数である。これらから、各馬が3着以内に入る見込みを評価する。
+- 着順は、出走頭数とレースの格を踏まえて読む。16頭立ての5着と8頭立ての5着、重賞と条件戦の着順は同じではない。人気を上回った走りか、下回った走りかも見る。
+- 今回の距離や馬場の経験が無い、距離が大きく変わる、間隔が長い、馬体重が大きく動いた、といった不安材料も見る。
+- form の career.starts が0または少ない馬は、情報が乏しい。実績が無いことだけを理由に外さない。
+- jockeyWinRate と trainerWinRate は、過去の成績から求めた勝率(出走数が少ないほど平均へ寄せた値)である。
+- historicalBoxHitRates は、同じ条件の過去のレースの実績である。topPopularityBoxes の actualHitRate は、人気の上位から horses 頭を入れたBoxが実際に当たった割合で、harvilleHitRate(candidates と同じ式の値)より低い。candidates の hitProbability は組み合わせどうしの比較に使い、絶対値は actualHitRate で読む。averageTopThreeByPopularity と longshotInTopThreeRate は、人気薄が3着以内にどれだけ入るかを示す。
+
+選び方
+- candidates は、勝率の上位の馬で作った、頭数ごとの的中確率の高い順の候補表である。alternatives は、同じ頭数の最良のBoxに入らない馬を1頭ずつ入れた場合の最良のBox(includes がその馬)と、最良のBoxからの的中確率の低下(hitProbabilityLoss)である。
+- まず、過去走から各馬が3着以内に入る見込みを評価する。次に、市場の評価より見込みが高いと判断した馬が最良のBoxに入っていなければ、alternatives の低下と見合うかを比べる。見合う場合はその馬を入れ、見合わない場合や根拠が弱い場合は最良のBoxを選ぶ。最良のBoxの中に、過去走から3着以内の見込みが低い馬がいれば、外すことも検討する。
+- candidates や alternatives にない組み合わせも選べる。その的中確率は、こちらで計算する。確率の計算は自分でしない。
+
 守ること
-- candidates は、runners の modelWinProbability から計算済みの的中確率の候補表である。確率の計算は自分でしない。基本は候補表の中から選ぶ。候補表にない組み合わせを選ぶ場合は、runners のデータに基づく具体的な理由を reason に書く。
 - horseNumbers は runners にある馬番だけを使う。重複させない。constraints.minHorses 頭以上、constraints.maxHorses 頭以下にする。
 - 3連単のオッズは与えられていない。期待値・回収率・儲かる、といった表現は使わない。的中を保証する表現も使わない。
 - データにない情報(調教の内容、血統、天気予報など)を事実として述べない。
@@ -176,23 +207,69 @@ const SYSTEM_PROMPT = `あなたは中央競馬の分析を補助するアシス
 
 出力
 - horseNumbers: 選んだ馬番(昇順)
-- reason: 選んだ理由を日本語で書く。候補表のどれを選んだか、頭数をその数にした理由(頭数が指定されている場合は、その馬を選んだ理由)を含め、200字程度にする。
+- reason: 選んだ理由を日本語で書く。入れた馬と外した馬のうち判断の分かれ目になった馬について、根拠にした過去走(レース名と着順など)を挙げる。頭数をその数にした理由(頭数が指定されている場合は、その馬を選んだ理由)も含め、300字程度にする。
 - caution: 注意点を日本語で100字程度書く。無ければ空の文字列にする。`;
+
+// 値の無い項目を除く 依頼の長さを抑えるため
+function compact<T extends Record<string, unknown>>(record: T): Partial<T> {
+    return Object.fromEntries(
+        Object.entries(record).filter(([, value]) => value != null && value !== ""),
+    ) as Partial<T>;
+}
+
+// 過去の1走をAIへ渡す形にする
+function pastRunView(run: PastRun) {
+    return compact({
+        date: run.date,
+        raceName: run.raceName,
+        course: run.course,
+        raceClass: run.raceClass,
+        trackSurface: run.trackSurface,
+        distance: run.distance,
+        trackCondition: run.trackCondition,
+        fieldSize: run.fieldSize,
+        finish: run.orderOfFinish,
+        popularity: run.popularity,
+        odds: run.odds,
+        margin: run.margin,
+        lastPhase: run.lastPhase,
+        lastPhaseRank: run.lastPhaseRank,
+        passingRank: run.passingRank,
+        jockey: run.jockeyName,
+        basisWeight: run.basisWeight,
+        horseWeight: run.horseWeight,
+        horseWeightDiff: run.horseWeightDiff,
+    });
+}
+
+function formView(form: HorseForm) {
+    return {
+        career: form.career,
+        sameSurface: form.sameSurface,
+        nearDistance: form.nearDistance,
+        longestDistance: form.longestDistance,
+        daysSinceLast: form.daysSinceLast,
+        distanceChange: form.distanceChange,
+        recentRuns: form.recentRuns.map(pastRunView),
+    };
+}
 
 /**
  * AIへの依頼を作る
  *
- * @param input - レースの予測と出馬表
+ * @param input - レースの予測と出馬表と過去走
  * @param candidates - 頭数ごとの候補(candidateBoxesの戻り値)
  * @param maxHorses - Boxの頭数の上限
+ * @param context - 候補表以外に添えるデータ
  * @returns 依頼
  */
 export function buildBoxRequest(
     input: BoxProposalInput,
     candidates: readonly BoxCandidate[],
     maxHorses: number,
+    context: BoxRequestContext = {},
 ): BoxSelectionRequest {
-    const { prediction, information } = input;
+    const { prediction, information, forms } = input;
     const { race } = information;
     const entries = new Map(
         information.horses.flatMap((horse) => (horse.horseNumber == null ? [] : [[horse.horseNumber, horse] as const])),
@@ -209,6 +286,7 @@ export function buildBoxRequest(
             weather: race.weather ?? null,
             trackCondition: race.trackCondition ?? null,
             raceClass: race.raceClass ?? null,
+            fieldSize: prediction.runners.length,
         },
         constraints: {
             minHorses: input.minHorses ?? MIN_BOX_HORSES,
@@ -220,6 +298,7 @@ export function buildBoxRequest(
             .sort((a, b) => a.horseNumber - b.horseNumber)
             .map((runner) => {
                 const entry = entries.get(runner.horseNumber);
+                const form = forms?.get(runner.horseNumber);
                 const isWeightAnnounced = entry != null && entry.horseWeight !== HORSE_WEIGHT_UNANNOUNCED;
                 return {
                     horseNumber: runner.horseNumber,
@@ -229,6 +308,8 @@ export function buildBoxRequest(
                     basisWeight: entry?.basisWeight ?? null,
                     jockey: entry?.jockeyName ?? null,
                     trainer: entry?.trainerName ?? null,
+                    jockeyWinRate: runner.jockeyWinRate == null ? null : round4(runner.jockeyWinRate),
+                    trainerWinRate: runner.trainerWinRate == null ? null : round4(runner.trainerWinRate),
                     horseWeight: isWeightAnnounced ? entry.horseWeight : null,
                     horseWeightDiff: isWeightAnnounced ? entry.horseWeightDiff : null,
                     winOdds: runner.odds,
@@ -236,6 +317,8 @@ export function buildBoxRequest(
                     marketWinProbability: round4(runner.marketProbability),
                     modelWinProbability: round4(runner.modelProbability),
                     modelRank: runner.modelRank,
+                    // 過去走を渡さない場合は項目ごと省く
+                    ...(form == null ? {} : { form: formView(form) }),
                 };
             }),
         candidates: candidates.map((candidate) => ({
@@ -245,6 +328,18 @@ export function buildBoxRequest(
             costYen: candidate.costYen,
             hitProbability: round4(candidate.hitProbability),
         })),
+        ...(context.alternatives == null || context.alternatives.length === 0
+            ? {}
+            : {
+                  alternatives: context.alternatives.map((alternative) => ({
+                      horseCount: alternative.horseNumbers.length,
+                      includes: alternative.includes,
+                      horseNumbers: alternative.horseNumbers,
+                      hitProbability: round4(alternative.hitProbability),
+                      hitProbabilityLoss: round4(alternative.hitProbabilityLoss),
+                  })),
+              }),
+        ...(context.baseRate == null ? {} : { historicalBoxHitRates: context.baseRate }),
     };
     // 文字列の中の「<」は<に置き換える 取得した文字列が区切りのタグを閉じて依頼の構造を壊せないようにするため
     const json = JSON.stringify(data).replaceAll("<", "\\u003c");
@@ -354,11 +449,23 @@ export async function proposeBox(
     }
     const maxHorses = baseline.horseNumbers.length;
 
+    // 頭数ごとの最良のBoxに入らない馬を入れた場合の最良のBox 人気順から外す選択の的中確率の低下を示す
+    const sizes = [...new Set(candidates.map((candidate) => candidate.horseNumbers.length))];
+    const alternatives = sizes.flatMap((size) => {
+        const best = candidates.find((candidate) => candidate.horseNumbers.length === size);
+        return best == null ? [] : alternativeBoxes(horseNumbers, probabilities, best);
+    });
+    const baseRate =
+        input.baseRates?.(
+            { trackSurface: input.information.race.trackSurface ?? null, fieldSize: horseNumbers.length },
+            sizes,
+        ) ?? null;
+
     let choice: BoxChoice | null = null;
     let aiModel: string | null = null;
     let fallbackCause = "";
     try {
-        const response = await selector(buildBoxRequest(input, candidates, maxHorses));
+        const response = await selector(buildBoxRequest(input, candidates, maxHorses, { alternatives, baseRate }));
         choice = parseBoxChoice(response.value, horseNumbers, maxHorses, minHorses);
         aiModel = sanitizeText(response.model, 64);
     } catch (error) {
@@ -405,6 +512,7 @@ export async function proposeBox(
         hitProbability,
         bestHitProbability: Math.max(bestSameSize?.hitProbability ?? 0, hitProbability),
         baseline,
+        baseRate,
         maxTickets,
         source: choice == null ? "fallback" : "ai",
         reason:

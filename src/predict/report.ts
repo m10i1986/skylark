@@ -327,6 +327,20 @@ export type BoxProposalReport = {
     fixedHorses?: number | null;
 };
 
+// 同じ条件の過去のレースで 人気上位から同じ頭数を入れたBoxが当たった割合 求められなかった場合はnull
+function describeBaseRate(proposal: BoxProposal): string | null {
+    const { baseRate } = proposal;
+    const rate = baseRate?.topPopularityBoxes.find((box) => box.horses === proposal.horseNumbers.length);
+    if (baseRate == null || rate == null) {
+        return null;
+    }
+    return (
+        `  過去の実績: ${baseRate.condition}の${baseRate.races.toLocaleString("en-US")}レースで、` +
+        `人気上位${rate.horses}頭のBoxの的中率は${percent(rate.actualHitRate)}(Harville式では${percent(rate.harvilleHitRate)})` +
+        ` 3着以内に人気7位以下が入った割合${percent(baseRate.longshotInTopThreeRate, 0)}`
+    );
+}
+
 /**
  * 3連単Boxの提案の報告を作る
  *
@@ -341,7 +355,8 @@ export function formatBoxProposals(report: BoxProposalReport): string {
             : `${fixedHorses}頭 ${maxTickets}点(${yen(maxTickets * TICKET_PRICE_YEN)})`;
     const lines = [
         `3連単Boxの提案 ${date} ${condition}`,
-        "  的中確率は、モデルの勝率から Harville 式で求めた目安です(強い馬ほど上位に偏る仮定で、実際とはずれます)。",
+        "  的中確率は、モデルの勝率から Harville 式で求めた目安です(強い馬ほど上位に偏る仮定で、実際より高く出ます)。",
+        "  同じ条件の過去のレースの実績(下の「過去の実績」)と比べて読んでください。",
         "",
     ];
     for (const proposal of proposals) {
@@ -360,6 +375,10 @@ export function formatBoxProposals(report: BoxProposalReport): string {
                 ` (同じ頭数の最良 ${percent(proposal.bestHitProbability)}、` +
                 `点数の上限内の最良 ${formatHorseNumbers(baseline)} の${percent(proposal.baseline.hitProbability)})`,
         );
+        const baseRateLine = describeBaseRate(proposal);
+        if (baseRateLine != null) {
+            lines.push(baseRateLine);
+        }
         lines.push(
             proposal.source === "ai"
                 ? `  選定: AI (${proposal.aiModel ?? "不明"})`

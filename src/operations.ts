@@ -17,7 +17,9 @@ import { PredictionRepository } from "./db/prediction-repository.ts";
 import { buildFeatures, defaultFeatureConcurrency } from "./feature.ts";
 import type { Logger } from "./logger.ts";
 import { type BoxProposal, type BoxSelector, proposeBox, toBoxProposalRecord } from "./predict/ai-box.ts";
-import { formatLocalDate, type PredictTodayResult, predictToday } from "./predict/live.ts";
+import { createBoxBaseRates, DEFAULT_BASE_RATE_SINCE } from "./predict/base-rates.ts";
+import { buildHorseForm, type HorseForm } from "./predict/form.ts";
+import { formatLocalDate, type PredictTodayResult, predictToday, type RacePrediction } from "./predict/live.ts";
 import {
     formatBoxProposals,
     formatBoxVerification,
@@ -29,7 +31,7 @@ import { defaultTrainOptions, trainPredictionModel } from "./predict/train.ts";
 import { downloadRaces, login } from "./scraper/downloader.ts";
 import { fetchEucJpHtml, HttpStatusError, readResponseText, requestWithTimeout } from "./scraper/http.ts";
 import { exportRaceUrlList, importRaceUrlList, makeRaceUrlList, raceUrlPathsFromIds } from "./scraper/race-list.ts";
-import type { NetkeibaClient } from "./webui/netkeiba-client.ts";
+import type { NetkeibaClient, RaceInformation } from "./webui/netkeiba-client.ts";
 
 type Environment = Readonly<Record<string, string | undefined>>;
 
@@ -183,6 +185,27 @@ async function predictRaces(
     }
 }
 
+// 出走馬ごとの過去走を 開催日より前の結果だけから読み込んでまとめる(馬番から引く)
+async function loadHorseForms(
+    repository: PredictionRepository,
+    racePrediction: RacePrediction,
+    information: RaceInformation,
+): Promise<Map<number, HorseForm>> {
+    const horseIds = racePrediction.runners.flatMap((runner) => (runner.horseId == null ? [] : [runner.horseId]));
+    const runsByHorse = await repository.loadHorseRuns(horseIds, racePrediction.date);
+    const target = {
+        date: racePrediction.date,
+        trackSurface: information.race.trackSurface ?? null,
+        distance: information.race.distance ?? null,
+    };
+    return new Map(
+        racePrediction.runners.map((runner) => [
+            runner.horseNumber,
+            buildHorseForm(runner.horseId == null ? [] : (runsByHorse.get(runner.horseId) ?? []), target),
+        ]),
+    );
+}
+
 // 予測したレースごとに 3連単Boxを提案させて保存し 報告する
 // 認証や依頼の誤りなど どのレースでも失敗する場合は 提案できた分を報告してから失敗にする
 async function proposeBoxesAndPrint(
@@ -208,6 +231,10 @@ async function proposeBoxesAndPrint(
         );
     };
     try {
+        // 同じ条件の過去のレースの実績 開催日より前の結果だけを使う
+        const baseRaces = await repository.loadRaceRecords(DEFAULT_BASE_RATE_SINCE, prediction.date);
+        logger.info(`base rates: ${baseRaces.length} races since ${DEFAULT_BASE_RATE_SINCE}`);
+        const baseRates = createBoxBaseRates(baseRaces);
         for (const racePrediction of prediction.predictions) {
             const information = prediction.informations.get(racePrediction.raceId);
             const proposal =
@@ -220,6 +247,8 @@ async function proposeBoxesAndPrint(
                               maxTickets: args.boxMaxTickets,
                               // 頭数を指定した場合は その頭数ちょうどのBoxだけを候補にする
                               ...(args.boxHorses == null ? {} : { minHorses: args.boxHorses }),
+                              forms: await loadHorseForms(repository, racePrediction, information),
+                              baseRates,
                           },
                           selector,
                           logger,

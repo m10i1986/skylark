@@ -8,7 +8,7 @@ import type { PredictionRecord } from "../db/schema.ts";
 import type { Logger } from "../logger.ts";
 import type { HorseEntry, NetkeibaClient, RaceInformation } from "../webui/netkeiba-client.ts";
 import { buildHistoryState } from "./dataset.ts";
-import { circuitOfRaceId, type HistoryState, startersOf } from "./history.ts";
+import { circuitOfRaceId, FEATURE_NAMES, type HistoryState, startersOf } from "./history.ts";
 import { parseModelParameters, probabilitiesOfRace } from "./model.ts";
 import { addDays } from "./train.ts";
 import type { RaceRecord, RunnerRecord } from "./types.ts";
@@ -57,6 +57,9 @@ export function formatRaceLabel(courseName: string, raceNumber: string, raceName
 export type PredictedRunner = RunnerAssessment & {
     horseId: number | null;
     horseName: string | null;
+    // 騎手と調教師の勝率 出走数が少ないほど平均へ寄せた値 履歴から求められなかった場合は省略する
+    jockeyWinRate?: number;
+    trainerWinRate?: number;
 };
 
 /** 1レースの予測 */
@@ -149,7 +152,10 @@ export function predictRace(
         return null;
     }
     const odds = starters.map((runner) => runner.odds ?? 0);
-    const probabilities = probabilitiesOfRace(parameters, state.featureRows(race), odds);
+    const features = state.featureRows(race);
+    const probabilities = probabilitiesOfRace(parameters, features, odds);
+    const jockeyColumn = FEATURE_NAMES.indexOf("jockey_win_rate");
+    const trainerColumn = FEATURE_NAMES.indexOf("trainer_win_rate");
     const assessments = assessRace(
         {
             horseNumbers: starters.map((runner) => runner.horseNumber),
@@ -163,10 +169,14 @@ export function predictRace(
     const runners = assessments
         .map((assessment, index): PredictedRunner => {
             const starter = starters[index];
+            const jockeyWinRate = features[index]?.[jockeyColumn];
+            const trainerWinRate = features[index]?.[trainerColumn];
             return {
                 ...assessment,
                 horseId: starter != null && starter.horseId > 0 ? starter.horseId : null,
                 horseName: horseNames.get(assessment.horseNumber) ?? null,
+                ...(jockeyWinRate == null ? {} : { jockeyWinRate }),
+                ...(trainerWinRate == null ? {} : { trainerWinRate }),
             };
         })
         .sort((a, b) => a.popularity - b.popularity || a.horseNumber - b.horseNumber);

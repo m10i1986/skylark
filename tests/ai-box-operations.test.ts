@@ -248,6 +248,51 @@ describe("runOperations: -B (AI box)", () => {
         expect(harness.handle.closed).toBe(1);
     });
 
+    test("gives the selector the past runs of each horse read before the race day, and never the race day's result", async () => {
+        await seedModelAndHistory();
+        // 当日の結果が取り込み済みでも 過去走には含めない
+        await crud.insertRaceInfo({
+            id: jraRaceId(901),
+            raceName: "当日の結果が出たレース",
+            date: TODAY,
+            distance: 1600,
+            trackSurface: "芝",
+            raceNumber: 2,
+            placeDetail: "東京",
+        });
+        await crud.insertRaceResults([resultRecord(jraRaceId(901), 1, { horseId: 5001, orderOfFinish: 1 })]);
+        const raceId = jraRaceId(1);
+        const { requests, selector } = scriptedSelector([CHOICE([1, 2, 3, 4])]);
+        const harness = harnessWith(fakeClient([{ raceId, name: "本日のS", horses: sixHorses() }]), selector);
+
+        await harness.run(["-B", String(raceId)]);
+
+        const match = /<race_data>\n([\s\S]*)\n<\/race_data>/.exec(requests[0]?.user ?? "");
+        const data = JSON.parse(match?.[1] ?? "{}") as {
+            runners: Array<{
+                horseNumber: number;
+                form: {
+                    career: { starts: number };
+                    recentRuns: Array<{ raceName: string; date: string; finish: number }>;
+                };
+            }>;
+            alternatives: unknown[];
+        };
+        const first = data.runners.find((runner) => runner.horseNumber === 1);
+        // 5001 の馬番1は 昨日の1レースだけ
+        expect(first?.form.career.starts).toBe(1);
+        expect(first?.form.recentRuns).toEqual([
+            expect.objectContaining({ raceName: "過去", date: YESTERDAY, finish: 1, fieldSize: 2 }),
+        ]);
+        // 過去走の無い馬も 出走数0として渡す
+        expect(data.runners.find((runner) => runner.horseNumber === 6)?.form.career.starts).toBe(0);
+        expect(requests[0]?.user).not.toContain("当日の結果が出たレース");
+        // 同じ条件の過去のレースが少ないため 実績は渡さない
+        expect(requests[0]?.user).not.toContain("historicalBoxHitRates");
+        expect(data.alternatives.length).toBeGreaterThan(0);
+        expect(harness.logger.ofLevel("info").some((message) => message.includes("base rates:"))).toBe(true);
+    });
+
     test("with -P, predicts only once and prints both reports", async () => {
         await seedModelAndHistory();
         const raceId = jraRaceId(1);
