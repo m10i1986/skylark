@@ -18,6 +18,7 @@ import { SkylarkCrud } from "../db/crud.ts";
 import type { RaceInfoRecord } from "../db/schema.ts";
 import { createLogger, describeError, type Logger } from "../logger.ts";
 import { runOperations } from "../operations.ts";
+import { circuitOfRaceId } from "../predict/history.ts";
 import { renderDocument } from "./document.tsx";
 import { createJobRunner, type JobRunner, type JobSpec } from "./job-runner.ts";
 import {
@@ -110,6 +111,29 @@ function hostnameOf(hostHeader: string | undefined): string {
     return hostHeader.startsWith("[")
         ? hostHeader.slice(0, hostHeader.indexOf("]") + 1)
         : (hostHeader.split(":")[0] ?? "");
+}
+
+/**
+ * 予測(-P)の対象にならない理由を返す
+ *
+ * 予測は当日開催の中央競馬だけが対象で それ以外のレースIDは実行時に読み飛ばされる 実行する前に画面で知らせる
+ *
+ * @param raceId - レースID
+ * @param kaisaiDate - 開催日(YYYY-MM-DD) 不明な場合はnull
+ * @param today - 今日の日付(YYYY-MM-DD)
+ * @returns 理由 予測できる場合はnull
+ */
+function findUnpredictableReason(raceId: number, kaisaiDate: string | null, today: string): string | null {
+    if (kaisaiDate == null) {
+        return "開催日が分からないため予測できません。";
+    }
+    if (kaisaiDate !== today) {
+        return "予測できるのは当日開催のレースだけです。";
+    }
+    if (circuitOfRaceId(raceId) !== "jra") {
+        return "予測できるのは中央競馬のレースだけです。";
+    }
+    return null;
 }
 
 function todayLocal(): string {
@@ -268,7 +292,15 @@ export function createApp(dependencies: WebUiDependencies): Hono {
             logger.error(`failed to check saved state: ${describeError(error)}`);
         }
 
-        return { raceId, race, horses, kaisaiDate: selectedDate.kaisaiDate, isSaved, unsavableReason };
+        return {
+            raceId,
+            race,
+            horses,
+            kaisaiDate: selectedDate.kaisaiDate,
+            isSaved,
+            unsavableReason,
+            unpredictableReason: findUnpredictableReason(raceId, selectedDate.kaisaiDate, dependencies.today()),
+        };
     }
 
     app.post("/save", async (c) => {

@@ -8,7 +8,9 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import type { CliArguments } from "../src/cli-args.ts";
 import type { RaceInfoRecord } from "../src/db/schema.ts";
+import { createJobRunner } from "../src/webui/job-runner.ts";
 import type {
     HorseEntry,
     NetkeibaClient,
@@ -88,20 +90,41 @@ type Harness = {
     savedIds: Set<number>;
     calls: { dates: number; lists: string[]; information: number[] };
     logger: ReturnType<typeof createRecordingLogger>;
+    // 操作の画面を有効にしたときに実行を受け付けた引数
+    executed: CliArguments[];
+    runner: ReturnType<typeof createJobRunner>;
     behavior: {
         failFetchDates: boolean;
         failSave: boolean;
         failIsSaved: boolean;
         info: Partial<RaceInformation["race"]>;
+        races: RaceListItem[];
     };
 };
 
-function createHarness(assetsDirectory?: string): Harness {
+type HarnessOptions = {
+    assetsDirectory?: string;
+    // 今日の日付(YYYY-MM-DD)
+    today?: string;
+    // 操作の画面(CLIの全操作)を有効にするか
+    hasOperations?: boolean;
+};
+
+function createHarness(options: HarnessOptions = {}): Harness {
+    const { assetsDirectory } = options;
     const saved: RaceInfoRecord[] = [];
     const savedIds = new Set<number>();
     const calls: Harness["calls"] = { dates: 0, lists: [], information: [] };
     const logger = createRecordingLogger();
-    const behavior: Harness["behavior"] = { failFetchDates: false, failSave: false, failIsSaved: false, info: {} };
+    const behavior: Harness["behavior"] = {
+        failFetchDates: false,
+        failSave: false,
+        failIsSaved: false,
+        info: {},
+        races: RACES,
+    };
+    const runner = createJobRunner({ logger });
+    const executed: CliArguments[] = [];
 
     const client: NetkeibaClient = {
         fetchRaceDates: async () => {
@@ -113,7 +136,7 @@ function createHarness(assetsDirectory?: string): Harness {
         },
         fetchRaceList: async (link) => {
             calls.lists.push(link);
-            return RACES;
+            return behavior.races;
         },
         fetchRaceInformation: async (raceId) => {
             calls.information.push(raceId);
@@ -124,7 +147,7 @@ function createHarness(assetsDirectory?: string): Harness {
     const dependencies: WebUiDependencies = {
         client,
         logger,
-        today: () => "2025-07-01",
+        today: () => options.today ?? "2025-07-01",
         isHostAllowed: (hostname) => ["localhost", "127.0.0.1", "[::1]"].includes(hostname),
         isRaceSaved: async (raceId) => {
             if (behavior.failIsSaved) {
@@ -140,8 +163,17 @@ function createHarness(assetsDirectory?: string): Harness {
             savedIds.add(record.id);
         },
         assetsDirectory,
+        operations: options.hasOperations
+            ? {
+                  runner,
+                  tempDirectory: "./test-temp",
+                  createExecutor: (args) => async () => {
+                      executed.push(args);
+                  },
+              }
+            : undefined,
     };
-    return { app: createApp(dependencies), saved, savedIds, calls, logger, behavior };
+    return { app: createApp(dependencies), saved, savedIds, calls, logger, executed, runner, behavior };
 }
 
 const FORM_HEADERS = {
@@ -272,6 +304,90 @@ describe("GET /", () => {
     });
 });
 
+// 表示中のレースだけを予測するフォーム(送信先は操作の画面と同じ POST /operations)
+function predictFormOf(html: string): string | null {
+    return /<form[^>]*action="\/operations"[^>]*>.*?<\/form>/s.exec(html)?.[0] ?? null;
+}
+
+// フォームの隠し項目の値
+function hiddenFields(form: string): Record<string, string> {
+    const fields: Record<string, string> = {};
+    for (const input of form.matchAll(/<input[^>]*>/g)) {
+        const name = /name="([^"]*)"/.exec(input[0])?.[1];
+        const value = /value="([^"]*)"/.exec(input[0])?.[1];
+        if (name != null && value != null) {
+            fields[name] = value;
+        }
+    }
+    return fields;
+}
+
+describe("GET / predict button", () => {
+    const get = async (target: string = "/"): Promise<string> =>
+        (await harness.app.request(target, { headers: { host: "localhost" } })).text();
+
+    test("is not shown when the operations screen is disabled", async () => {
+        harness = createHarness({ today: "2025-07-06" });
+        const html = await get();
+        expect(html).not.toContain("このレースを予測");
+        expect(predictFormOf(html)).toBeNull();
+    });
+
+    test("offers a prediction for the displayed race only on a central race of the day", async () => {
+        harness = createHarness({ today: "2025-07-06", hasOperations: true });
+        const form = predictFormOf(await get("/?date=0&race=1"));
+        expect(form).not.toBeNull();
+        expect(form).toContain("このレースを予測");
+        expect(form).not.toContain('disabled=""');
+        expect(hiddenFields(form ?? "")).toEqual({ predict: "1", raceIds: "209901010102" });
+    });
+
+    test("is disabled with a reason when the date is not today", async () => {
+        harness = createHarness({ today: "2025-07-01", hasOperations: true });
+        const form = predictFormOf(await get());
+        expect(form).toContain('disabled=""');
+        expect(form).toContain("予測できるのは当日開催のレースだけです。");
+    });
+
+    test("is disabled with a reason for a local race", async () => {
+        harness = createHarness({ today: "2025-07-06", hasOperations: true });
+        harness.behavior.races = [
+            {
+                courseName: "大井",
+                raceNumber: "1R",
+                raceName: "地方",
+                text: "大井 - 1R  - 地方",
+                href: "../race/shutuba.html?race_id=202544010101",
+                raceId: 202544010101,
+            },
+        ];
+        const form = predictFormOf(await get());
+        expect(form).toContain('disabled=""');
+        expect(form).toContain("予測できるのは中央競馬のレースだけです。");
+    });
+
+    test("sends exactly the fields that the operations screen accepts to start a prediction", async () => {
+        harness = createHarness({ today: "2025-07-06", hasOperations: true });
+        const form = predictFormOf(await get("/?date=0&race=1"));
+        const response = await harness.app.request("/operations", {
+            method: "POST",
+            headers: FORM_HEADERS,
+            body: new URLSearchParams(hiddenFields(form ?? "")).toString(),
+        });
+        expect(response.status).toBe(303);
+        expect(response.headers.get("location")).toMatch(/^\/jobs\/[0-9a-f-]{36}$/);
+        await harness.runner.whenIdle();
+        expect(harness.executed).toHaveLength(1);
+        expect(harness.executed[0]).toMatchObject({
+            isPredict: true,
+            isScraping: false,
+            isFeature: false,
+            isTrain: false,
+            raceIds: ["209901010102"],
+        });
+    });
+});
+
 describe("POST /save", () => {
     async function view(): Promise<void> {
         await harness.app.request("/?date=0&race=0", { headers: { host: "localhost" } });
@@ -367,7 +483,7 @@ describe("GET /assets/:name", () => {
         await writeFile(path.join(assetsDirectory, "app.js"), "console.log(1);");
         await writeFile(path.join(assetsDirectory, "app.css"), "body{margin:0}");
         await writeFile(path.join(assetsDirectory, "secret.txt"), "secret");
-        harness = createHarness(assetsDirectory);
+        harness = createHarness({ assetsDirectory });
     });
 
     afterEach(async () => {

@@ -14,6 +14,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import type { HorseEntry, RaceDate, RaceInfoDraft, RaceListItem } from "./netkeiba-client.ts";
+import { FLAG_ON } from "./operation-fields.ts";
 
 // Reactは文字列を自動でエスケープするため サイト由来の値をそのまま埋め込んでも注入されない
 
@@ -173,6 +174,8 @@ export type RaceDetail = {
     isSaved: boolean;
     // 保存できない理由 保存できる場合はnull
     unsavableReason: string | null;
+    // 予測できない理由 予測できる場合はnull
+    unpredictableReason: string | null;
 };
 
 /** レース情報の画面の描画に必要な値 JSONにできる値だけを持つ(クライアントへそのまま渡す) */
@@ -244,6 +247,22 @@ function RaceDetailView({ detail, heading }: { detail: RaceDetail; heading: stri
     );
 }
 
+// 表示中のレースだけを予測する 操作の画面と同じ送信先へ「予測と抽出」とレースIDを渡し 他の設定は既定値にする
+function PredictForm({ detail }: { detail: RaceDetail }): ReactNode {
+    return (
+        <form method="post" action="/operations" className="flex flex-wrap items-center gap-3">
+            <input type="hidden" name="predict" value={FLAG_ON} />
+            <input type="hidden" name="raceIds" value={String(detail.raceId)} />
+            <Button type="submit" disabled={detail.unpredictableReason != null}>
+                このレースを予測
+            </Button>
+            {detail.unpredictableReason != null && (
+                <span className="text-sm text-muted-foreground">{detail.unpredictableReason}</span>
+            )}
+        </form>
+    );
+}
+
 export function IndexPage(props: IndexPageProps): ReactNode {
     const { dates, dateIndex, races, raceIndex, selectedRaceText, detail, notice, isOperationsEnabled } = props;
     const selectedDate = dates[dateIndex];
@@ -306,6 +325,8 @@ export function IndexPage(props: IndexPageProps): ReactNode {
                             <span className="text-sm text-muted-foreground">{detail.unsavableReason}</span>
                         )}
                     </form>
+
+                    {isOperationsEnabled && <PredictForm detail={detail} />}
                 </>
             )}
         </main>
