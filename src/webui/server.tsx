@@ -32,7 +32,7 @@ import type { OperationFormValues } from "./operation-fields.ts";
 import { buildOperationDefaults, collectFormValues, parseOperationForm } from "./operation-form.ts";
 import type { JobEventsResponse } from "./operations-views.tsx";
 import { createTtlCache } from "./ttl-cache.ts";
-import type { Notice, RaceDetail } from "./views.tsx";
+import { type DatedRaceDate, dateParam, type Notice, type RaceDetail } from "./views.tsx";
 
 // 取得結果を使い回す時間 元のStreamlit版がセッション中は再取得しなかったことに合わせる
 const CACHE_TTL_MS = 15 * 60 * 1000;
@@ -42,6 +42,9 @@ const DEFAULT_PORT = 8501;
 
 const LOOPBACK_HOSTNAMES: ReadonlySet<string> = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
 const RACE_ID_PATTERN = /^\d{1,18}$/;
+
+// URLの date 開催日(YYYYMMDD)
+const DATE_PARAM_PATTERN = /^\d{8}$/;
 const JOB_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const AFTER_PATTERN = /^\d{1,12}$/;
 // 操作フォームの本文の上限 入力欄の上限(レースID)に余裕を足した値
@@ -101,6 +104,17 @@ function parseIndex(value: string | undefined, length: number): number {
     }
     const index = Number(value);
     return index < length ? index : 0;
+}
+
+// URLの date(YYYYMMDD)に当たる開催日の番号 不正な値や一覧に無い開催日は先頭を選ぶ
+function parseDateIndex(value: string | undefined, dates: readonly DatedRaceDate[]): number {
+    if (value == null || !DATE_PARAM_PATTERN.test(value)) {
+        return 0;
+    }
+    return Math.max(
+        dates.findIndex((date) => dateParam(date) === value),
+        0,
+    );
 }
 
 function hostnameOf(hostHeader: string | undefined): string {
@@ -205,16 +219,18 @@ export function createApp(dependencies: WebUiDependencies): Hono {
     app.get("/", async (c) => {
         const noticeQuery = c.req.query("n");
         let notice: Notice | null = isNoticeCode(noticeQuery) ? NOTICES[noticeQuery] : null;
-        let dates: RaceDate[] = [];
+        let dates: DatedRaceDate[] = [];
 
         try {
-            dates = await datesCache.getOrLoad("dates", () => client.fetchRaceDates(dependencies.today()));
+            const loaded = await datesCache.getOrLoad("dates", () => client.fetchRaceDates(dependencies.today()));
+            // 開催日が分からない日は URLの date で指定できないため 一覧に出さない
+            dates = loaded.filter((date): date is DatedRaceDate => date.kaisaiDate != null);
         } catch (error) {
             logger.error(`failed to fetch race dates: ${describeError(error)}`);
             notice = { kind: "error", text: "開催日を取得できませんでした。しばらくしてから再表示してください。" };
         }
 
-        const dateIndex = parseIndex(c.req.query("date"), dates.length);
+        const dateIndex = parseDateIndex(c.req.query("date"), dates);
         const selectedDate = dates[dateIndex];
         let races: RaceListItem[] | null = null;
         let detail: RaceDetail | null = null;
@@ -306,9 +322,18 @@ export function createApp(dependencies: WebUiDependencies): Hono {
     app.post("/save", async (c) => {
         const form = await c.req.parseBody();
         const rawRaceId = typeof form.raceId === "string" ? form.raceId : "";
-        const dateIndex = parseIndex(typeof form.date === "string" ? form.date : undefined, Number.MAX_SAFE_INTEGER);
+        // 戻り先に使う値は 数字だけに絞る(不正な開催日は省き 先頭の開催日に戻す)
+        const rawDate = typeof form.date === "string" ? form.date : "";
         const raceIndex = parseIndex(typeof form.race === "string" ? form.race : undefined, Number.MAX_SAFE_INTEGER);
-        const back = (code: NoticeCode): Response => c.redirect(`/?date=${dateIndex}&race=${raceIndex}&n=${code}`, 303);
+        const back = (code: NoticeCode): Response => {
+            const params = new URLSearchParams();
+            if (DATE_PARAM_PATTERN.test(rawDate)) {
+                params.set("date", rawDate);
+            }
+            params.set("race", String(raceIndex));
+            params.set("n", code);
+            return c.redirect(`/?${params.toString()}`, 303);
+        };
 
         if (!RACE_ID_PATTERN.test(rawRaceId)) {
             return c.text("Bad Request", 400);

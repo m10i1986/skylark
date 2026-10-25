@@ -74,23 +74,38 @@ export function SiteNav({
     );
 }
 
+/** 開催日が分かる開催日 URLの date で指定できるのは この開催日だけ */
+export type DatedRaceDate = RaceDate & { kaisaiDate: string };
+
+/** URLの date に使う開催日(YYYYMMDD) kaisaiDate(YYYY-MM-DD)からハイフンを除く */
+export function dateParam(date: DatedRaceDate): string {
+    return date.kaisaiDate.replaceAll("-", "");
+}
+
 /**
  * 開催日とレースの番号から画面のパスを作る
  *
- * レースを省略すると 先頭のレースを表示する(開催日を変えたとき 前の開催日のレース番号を持ち越さない)
+ * @param date - 開催日(YYYYMMDD) 省略(null)すると 先頭の開催日を表示する
+ * @param raceIndex - レースの番号(一覧の並び順) 省略すると 先頭のレースを表示する(開催日を変えたとき 前の開催日のレース番号を持ち越さない)
  */
-export function selectionPath(dateIndex: number, raceIndex?: number): string {
-    const params = new URLSearchParams({ date: String(dateIndex) });
+export function selectionPath(date: string | null, raceIndex?: number): string {
+    const params = new URLSearchParams();
+    if (date != null) {
+        params.set("date", date);
+    }
     if (raceIndex != null) {
         params.set("race", String(raceIndex));
     }
-    return `/?${params.toString()}`;
+    const query = params.toString();
+    return query === "" ? "/" : `/?${query}`;
 }
 
 type SelectFieldProps = {
     name: string;
     label: string;
     options: string[];
+    // 選択肢ごとの送信値(optionsと同じ並び) 開催日はYYYYMMDD レースは一覧の番号
+    values: string[];
     selected: number;
     // 選択が変わったときに呼ぶ(選んだ選択肢の番号)
     onSelect: (index: number) => void;
@@ -98,12 +113,14 @@ type SelectFieldProps = {
 
 // 選択肢を並べた選択欄 フォームの送信にはRadixが隠しselectを出す
 // 表示する文字は自前で決める(サーバー側の描画では選択肢の一覧が無く Radixが文字を出せないため)
-function SelectField({ name, label, options, selected, onSelect }: SelectFieldProps): ReactNode {
+function SelectField({ name, label, options, values, selected, onSelect }: SelectFieldProps): ReactNode {
     const id = useId();
-    const [value, setValue] = useState(String(selected));
+    const [value, setValue] = useState(values[selected] ?? "");
+    // 送信値に当たる選択肢が無い場合は先頭を選ぶ
+    const indexOfValue = (target: string): number => Math.max(values.indexOf(target), 0);
     const handleValueChange = (next: string): void => {
         setValue(next);
-        onSelect(Number(next));
+        onSelect(indexOfValue(next));
     };
 
     return (
@@ -111,12 +128,12 @@ function SelectField({ name, label, options, selected, onSelect }: SelectFieldPr
             <Label htmlFor={id}>{label}</Label>
             <Select name={name} value={value} onValueChange={handleValueChange}>
                 <SelectTrigger id={id} className="w-full">
-                    <SelectValue>{options[Number(value)] ?? ""}</SelectValue>
+                    <SelectValue>{options[indexOfValue(value)] ?? ""}</SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                     {options.map((text, index) => (
                         // biome-ignore lint/suspicious/noArrayIndexKey: 選択肢は表示順の番号で識別する(同じ文言が並び得る)
-                        <SelectItem key={index} value={String(index)}>
+                        <SelectItem key={index} value={values[index] ?? String(index)}>
                             {text}
                         </SelectItem>
                     ))}
@@ -180,7 +197,7 @@ export type RaceDetail = {
 
 /** レース情報の画面の描画に必要な値 JSONにできる値だけを持つ(クライアントへそのまま渡す) */
 export type IndexPageProps = {
-    dates: RaceDate[];
+    dates: DatedRaceDate[];
     dateIndex: number;
     races: RaceListItem[] | null;
     raceIndex: number;
@@ -283,6 +300,8 @@ function RaceActionForm({
 export function IndexPage(props: IndexPageProps): ReactNode {
     const { dates, dateIndex, races, raceIndex, selectedRaceText, detail, notice, isOperationsEnabled } = props;
     const selectedDate = dates[dateIndex];
+    const dateValues = dates.map(dateParam);
+    const selectedDateValue = selectedDate == null ? null : dateParam(selectedDate);
 
     return (
         <main className="mx-auto flex max-w-6xl flex-col gap-6 p-4 sm:p-8">
@@ -301,17 +320,19 @@ export function IndexPage(props: IndexPageProps): ReactNode {
                             name="date"
                             label="開催日"
                             options={dates.map((date) => date.text)}
+                            values={dateValues}
                             selected={dateIndex}
                             // 開催日を変えたら すぐにその日のレース一覧へ切り替える
-                            onSelect={(index) => window.location.assign(selectionPath(index))}
+                            onSelect={(index) => window.location.assign(selectionPath(dateValues[index] ?? null))}
                         />
                         {races != null && races.length > 0 && (
                             <SelectField
                                 name="race"
                                 label="レース"
                                 options={races.map((race) => race.text)}
+                                values={races.map((_, index) => String(index))}
                                 selected={raceIndex}
-                                onSelect={(index) => window.location.assign(selectionPath(dateIndex, index))}
+                                onSelect={(index) => window.location.assign(selectionPath(selectedDateValue, index))}
                             />
                         )}
                         <Button type="submit">表示</Button>
@@ -331,7 +352,7 @@ export function IndexPage(props: IndexPageProps): ReactNode {
                     <RaceDetailView detail={detail} heading={`レース情報: ${selectedRaceText ?? ""}`} />
 
                     <form method="post" action="/save" className="flex flex-wrap items-center gap-3">
-                        <input type="hidden" name="date" value={String(dateIndex)} />
+                        <input type="hidden" name="date" value={selectedDateValue ?? ""} />
                         <input type="hidden" name="race" value={String(raceIndex)} />
                         <input type="hidden" name="raceId" value={String(detail.raceId)} />
                         <Button type="submit" disabled={detail.isSaved || detail.unsavableReason != null}>

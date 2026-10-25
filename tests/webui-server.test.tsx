@@ -99,6 +99,7 @@ type Harness = {
         failIsSaved: boolean;
         info: Partial<RaceInformation["race"]>;
         races: RaceListItem[];
+        dates: RaceDate[];
     };
 };
 
@@ -122,6 +123,7 @@ function createHarness(options: HarnessOptions = {}): Harness {
         failIsSaved: false,
         info: {},
         races: RACES,
+        dates: DATES,
     };
     const runner = createJobRunner({ logger });
     const executed: CliArguments[] = [];
@@ -132,7 +134,7 @@ function createHarness(options: HarnessOptions = {}): Harness {
             if (behavior.failFetchDates) {
                 throw new Error("browser crashed");
             }
-            return DATES;
+            return behavior.dates;
         },
         fetchRaceList: async (link) => {
             calls.lists.push(link);
@@ -212,12 +214,52 @@ describe("GET /", () => {
         expect(html).toContain("テストホース&lt;b&gt;");
     });
 
-    test("selects by index and clamps invalid indexes to the first entry", async () => {
-        await harness.app.request("/?date=1&race=1", { headers: { host: "localhost" } });
-        await harness.app.request("/?date=99&race=abc", { headers: { host: "localhost" } });
-        await harness.app.request("/?date=-1&race=1e3", { headers: { host: "localhost" } });
-        expect(harness.calls.lists).toEqual([DATES[1]?.href, DATES[0]?.href]);
+    test("selects the date by YYYYMMDD and the race by index, and clamps invalid values to the first entry", async () => {
+        await harness.app.request("/?date=20250713&race=1", { headers: { host: "localhost" } });
+        await harness.app.request("/?date=20250713&race=abc", { headers: { host: "localhost" } });
+        // 同じ開催日の一覧は取得し直さない
+        expect(harness.calls.lists).toEqual([DATES[1]?.href]);
         expect(harness.calls.information).toEqual([209901010102, 209901010101]);
+    });
+
+    test("shows the first date for a date that is not a listed YYYYMMDD", async () => {
+        // 旧形式の番号 ハイフン付き 存在しない日 一覧に無い日 記号 桁違い
+        for (const date of ["1", "99", "-1", "2025-07-13", "20250799", "20991231", "<x>", "202507130"]) {
+            harness = createHarness();
+            await harness.app.request(`/?date=${encodeURIComponent(date)}`, { headers: { host: "localhost" } });
+            expect(harness.calls.lists).toEqual([DATES[0]?.href]);
+        }
+    });
+
+    test("hands the selected date to the save form as YYYYMMDD", async () => {
+        const html = await (
+            await harness.app.request("/?date=20250713&race=1", { headers: { host: "localhost" } })
+        ).text();
+        expect(html).toContain('name="date" value="20250713"');
+        expect(html).toContain("2025-07-13 のレース一覧");
+        const props = JSON.parse(
+            /<script id="skylark-props" type="application\/json">(.*?)<\/script>/s.exec(html)?.[1] ?? "null",
+        );
+        // 画面の選択欄は一覧の番号で選ぶ URLに出るのは開催日
+        expect(props.dateIndex).toBe(1);
+    });
+
+    test("leaves out a date whose day is unknown, because the URL cannot name it", async () => {
+        harness.behavior.dates = [{ text: "日付なし", href: "race_list.html", kaisaiDate: null }, ...DATES];
+        const response = await harness.app.request("/", { headers: { host: "localhost" } });
+        expect(response.status).toBe(200);
+        const html = await response.text();
+        expect(html).not.toContain("日付なし");
+        // 日付なしを除いた先頭(7/6)が選ばれる
+        expect(harness.calls.lists).toEqual([DATES[0]?.href]);
+        expect(html).toContain('name="date" value="20250706"');
+    });
+
+    test("renders without a date when no race date could be fetched", async () => {
+        harness.behavior.dates = [];
+        const response = await harness.app.request("/?date=20250706", { headers: { host: "localhost" } });
+        expect(response.status).toBe(200);
+        expect(harness.calls.lists).toEqual([]);
     });
 
     test("caches site requests between page views", async () => {
@@ -345,7 +387,7 @@ describe("GET / predict button", () => {
 
     test("offers a prediction for the displayed race only on a central race of the day", async () => {
         harness = createHarness({ today: "2025-07-06", hasOperations: true });
-        const form = predictFormOf(await get("/?date=0&race=1"));
+        const form = predictFormOf(await get("/?date=20250706&race=1"));
         expect(form).not.toBeNull();
         expect(form).toContain("このレースを予測");
         expect(form).not.toContain('disabled=""');
@@ -378,7 +420,7 @@ describe("GET / predict button", () => {
 
     test("sends exactly the fields that the operations screen accepts to start a prediction", async () => {
         harness = createHarness({ today: "2025-07-06", hasOperations: true });
-        const form = predictFormOf(await get("/?date=0&race=1"));
+        const form = predictFormOf(await get("/?date=20250706&race=1"));
         const response = await harness.app.request("/operations", {
             method: "POST",
             headers: FORM_HEADERS,
@@ -412,7 +454,7 @@ describe("GET / AI box button", () => {
 
     test("offers the AI box for the displayed race, with a note about the cost", async () => {
         harness = createHarness({ today: "2025-07-06", hasOperations: true });
-        const form = operationFormWith(await get("/?date=0&race=1"), "aiBox");
+        const form = operationFormWith(await get("/?date=20250706&race=1"), "aiBox");
         expect(form).not.toBeNull();
         expect(form).toContain("このレースの3連単Boxを AI に提案させる");
         expect(form).toContain("料金がかかります");
@@ -422,7 +464,7 @@ describe("GET / AI box button", () => {
 
     test("shows every runner for the prediction button (verbose), and does not start the AI box from it", async () => {
         harness = createHarness({ today: "2025-07-06", hasOperations: true });
-        const html = await get("/?date=0&race=1");
+        const html = await get("/?date=20250706&race=1");
         expect(hiddenFields(predictFormOf(html) ?? "")).toEqual({
             predict: "1",
             verbose: "1",
@@ -440,7 +482,7 @@ describe("GET / AI box button", () => {
 
     test("starts an AI box job for the displayed race only", async () => {
         harness = createHarness({ today: "2025-07-06", hasOperations: true });
-        const form = operationFormWith(await get("/?date=0&race=1"), "aiBox");
+        const form = operationFormWith(await get("/?date=20250706&race=1"), "aiBox");
         const response = await harness.app.request("/operations", {
             method: "POST",
             headers: FORM_HEADERS,
@@ -468,9 +510,9 @@ describe("POST /save", () => {
 
     test("saves the displayed race with the date and place from the list", async () => {
         await view();
-        const response = await postSave(harness, { raceId: "209901010101", date: "0", race: "0" });
+        const response = await postSave(harness, { raceId: "209901010101", date: "20250706", race: "0" });
         expect(response.status).toBe(303);
-        expect(response.headers.get("location")).toBe("/?date=0&race=0&n=saved");
+        expect(response.headers.get("location")).toBe("/?date=20250706&race=0&n=saved");
         expect(harness.saved).toHaveLength(1);
         expect(harness.saved[0]).toMatchObject({
             id: 209901010101,
@@ -524,10 +566,14 @@ describe("POST /save", () => {
         expect(harness.logger.ofLevel("error")[0]).toContain("varchar overflow");
     });
 
-    test("sanitizes redirect indexes", async () => {
-        await view();
-        const response = await postSave(harness, { raceId: "209901010101", date: "<x>", race: "99999999999" });
-        expect(response.headers.get("location")).toBe("/?date=0&race=0&n=saved");
+    test("sanitizes the date and the race index of the redirect", async () => {
+        for (const date of ["<x>", "0", "2025-07-06", "202507060", ""]) {
+            harness = createHarness();
+            await view();
+            const response = await postSave(harness, { raceId: "209901010101", date, race: "99999999999" });
+            // 不正な開催日は省く(先頭の開催日に戻る)
+            expect(response.headers.get("location")).toBe("/?race=0&n=saved");
+        }
     });
 
     test("is rejected for a cross origin request", async () => {
@@ -597,11 +643,16 @@ describe("GET /assets/:name", () => {
 
 describe("selectionPath", () => {
     test("drops the race number so that a new date starts at its first race", () => {
-        expect(selectionPath(2)).toBe("/?date=2");
+        expect(selectionPath("20250713")).toBe("/?date=20250713");
     });
 
-    test("keeps both numbers when the race is chosen", () => {
-        expect(selectionPath(2, 5)).toBe("/?date=2&race=5");
-        expect(selectionPath(0, 0)).toBe("/?date=0&race=0");
+    test("keeps both the date and the race number when the race is chosen", () => {
+        expect(selectionPath("20250713", 5)).toBe("/?date=20250713&race=5");
+        expect(selectionPath("20250706", 0)).toBe("/?date=20250706&race=0");
+    });
+
+    test("leaves out the date when there is none", () => {
+        expect(selectionPath(null)).toBe("/");
+        expect(selectionPath(null, 3)).toBe("/?race=3");
     });
 });
