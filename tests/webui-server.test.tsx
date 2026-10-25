@@ -441,6 +441,57 @@ describe("GET / predict button", () => {
     });
 });
 
+describe("GET / report button", () => {
+    const get = async (target: string = "/"): Promise<string> =>
+        (await harness.app.request(target, { headers: { host: "localhost" } })).text();
+
+    test("is not shown when the operations screen is disabled", async () => {
+        harness = createHarness({ today: "2025-07-06" });
+        const html = await get("/?date=20250706&race=1");
+        expect(html).not.toContain("結果と突き合わせる");
+        expect(operationFormWith(html, "report")).toBeNull();
+    });
+
+    test("offers the report of the date of the displayed race, without a race id", async () => {
+        harness = createHarness({ today: "2025-07-06", hasOperations: true });
+        const form = operationFormWith(await get("/?date=20250706&race=1"), "report");
+        expect(form).not.toBeNull();
+        expect(form).toContain("この開催日の予測と提案を結果と突き合わせる");
+        expect(form).toContain("2025-07-06 の予測とBoxの提案が対象です");
+        expect(form).not.toContain('disabled=""');
+        expect(hiddenFields(form ?? "")).toEqual({ report: "1", date: "2025-07-06" });
+    });
+
+    test("is available for a past date, which is when the results are known", async () => {
+        harness = createHarness({ today: "2025-07-20", hasOperations: true });
+        const form = operationFormWith(await get("/?date=20250706&race=1"), "report");
+        expect(form).not.toContain('disabled=""');
+        expect(hiddenFields(form ?? "")).toEqual({ report: "1", date: "2025-07-06" });
+    });
+
+    test("starts a report job for that date only", async () => {
+        harness = createHarness({ today: "2025-07-06", hasOperations: true });
+        const form = operationFormWith(await get("/?date=20250706&race=1"), "report");
+        const response = await harness.app.request("/operations", {
+            method: "POST",
+            headers: FORM_HEADERS,
+            body: new URLSearchParams(hiddenFields(form ?? "")).toString(),
+        });
+        expect(response.status).toBe(303);
+        expect(response.headers.get("location")).toMatch(/^\/jobs\/[0-9a-f-]{36}$/);
+        await harness.runner.whenIdle();
+        expect(harness.executed).toHaveLength(1);
+        expect(harness.executed[0]).toMatchObject({
+            isReport: true,
+            date: "2025-07-06",
+            isPredict: false,
+            isAiBox: false,
+            isScraping: false,
+            raceIds: [],
+        });
+    });
+});
+
 describe("GET / AI box button", () => {
     const get = async (target: string = "/"): Promise<string> =>
         (await harness.app.request(target, { headers: { host: "localhost" } })).text();

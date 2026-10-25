@@ -337,6 +337,26 @@ function RaceActionForm({
     );
 }
 
+// 表示中のレースの開催日について 保存済みの予測とBoxの提案を確定した結果と突き合わせる(--report)
+// 突き合わせは開催日単位で レースIDは渡さない
+function ReportActionForm({ detail }: { detail: RaceDetail }): ReactNode {
+    const { kaisaiDate } = detail;
+    return (
+        <form method="post" action="/operations" className="flex flex-wrap items-center gap-3">
+            <input type="hidden" name="report" value={FLAG_ON} />
+            <input type="hidden" name="date" value={kaisaiDate ?? ""} />
+            <Button type="submit" disabled={kaisaiDate == null}>
+                この開催日の予測と提案を結果と突き合わせる
+            </Button>
+            <span className="text-sm text-muted-foreground">
+                {kaisaiDate == null
+                    ? "開催日が分からないため突き合わせできません。"
+                    : `${kaisaiDate} の予測とBoxの提案が対象です(このレースだけではありません)。結果の取り込み(-U -S)が済んでいる必要があります。`}
+            </span>
+        </form>
+    );
+}
+
 export function IndexPage(props: IndexPageProps): ReactNode {
     const { dates, dateIndex, races, raceIndex, selectedRaceText, detail, notice, isOperationsEnabled } = props;
     const selectedDate = dates[dateIndex];
@@ -417,6 +437,7 @@ export function IndexPage(props: IndexPageProps): ReactNode {
                             note="Claude CLI を 1 回呼びます(Claude の利用枠を消費します)。予測も行います。"
                         />
                     )}
+                    {isOperationsEnabled && <ReportActionForm detail={detail} />}
                 </>
             )}
         </main>
