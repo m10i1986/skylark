@@ -41,11 +41,12 @@ beforeEach(async () => {
     ]);
 });
 
-async function seedRace(raceId: number, date: string): Promise<void> {
+async function seedRace(raceId: number, date: string, postTime: string | null = null): Promise<void> {
     await crud.insertRaceInfo({
         id: raceId,
         raceName: `race ${raceId}`,
         date,
+        postTime,
         distance: 1600,
         trackSurface: "芝",
         raceNumber: 1,
@@ -222,6 +223,75 @@ describe("predictions", () => {
         expect(await repository.listPredictionsWithResults("2026-10-18")).toEqual([]);
     });
 
+    // 発走 15:40 JST = 06:40:00Z
+    const POST_TIME = "15:40";
+    const MORNING = new Date("2026-10-17T21:57:46Z");
+    const JUST_BEFORE_POST = new Date("2026-10-18T06:39:59Z");
+    const AT_POST = new Date("2026-10-18T06:40:00Z");
+    const AFTER_POST = new Date("2026-10-18T11:04:07Z");
+
+    test("uses the last snapshot captured before the post time, not the later ones with the final odds", async () => {
+        const modelId = await insertModel();
+        await seedRace(202605040701, "2026-10-18", POST_TIME);
+        await repository.insertPredictions([
+            prediction({ modelId, capturedAt: MORNING, odds: 30 }),
+            prediction({ modelId, capturedAt: JUST_BEFORE_POST, odds: 20 }),
+            // 発走の時刻ちょうどは発走前に含めない
+            prediction({ modelId, capturedAt: AT_POST, odds: 11 }),
+            prediction({ modelId, capturedAt: AFTER_POST, odds: 10 }),
+        ]);
+
+        const rows = await repository.listPredictionsWithResults("2026-10-18");
+
+        expect(rows.map((row) => [row.capturedAt.toISOString(), row.odds])).toEqual([
+            [JUST_BEFORE_POST.toISOString(), 20],
+        ]);
+        expect(await repository.listRacesPredictedOnlyAfterPost("2026-10-18")).toEqual([]);
+    });
+
+    test("leaves out a race predicted only after the post time and lists it as excluded", async () => {
+        const modelId = await insertModel();
+        await seedRace(202605040701, "2026-10-18", POST_TIME);
+        await seedRace(202605040702, "2026-10-18", POST_TIME);
+        await repository.insertPredictions([
+            prediction({ modelId, raceId: 202605040701, capturedAt: AT_POST, raceName: "後だけS" }),
+            prediction({ modelId, raceId: 202605040701, capturedAt: AFTER_POST, raceName: "後だけS" }),
+            prediction({ modelId, raceId: 202605040702, capturedAt: MORNING, raceName: "前もS" }),
+            prediction({ modelId, raceId: 202605040702, capturedAt: AFTER_POST, raceName: "前もS" }),
+        ]);
+
+        const rows = await repository.listPredictionsWithResults("2026-10-18");
+
+        expect(rows.map((row) => [row.raceId, row.capturedAt.toISOString()])).toEqual([
+            [202605040702, MORNING.toISOString()],
+        ]);
+        expect(await repository.listRacesPredictedOnlyAfterPost("2026-10-18")).toEqual([
+            { raceId: 202605040701, raceName: "後だけS" },
+        ]);
+        expect(await repository.listRacesPredictedOnlyAfterPost("2026-10-11")).toEqual([]);
+    });
+
+    test("falls back to the latest snapshot when the post time is unknown", async () => {
+        const modelId = await insertModel();
+        // レース情報が無いレースと 発走時刻が空のレース
+        await seedRace(202605040702, "2026-10-18", null);
+        await repository.insertPredictions([
+            prediction({ modelId, raceId: 202605040701, capturedAt: MORNING, odds: 30 }),
+            prediction({ modelId, raceId: 202605040701, capturedAt: AFTER_POST, odds: 10 }),
+            prediction({ modelId, raceId: 202605040702, capturedAt: MORNING, odds: 30 }),
+            prediction({ modelId, raceId: 202605040702, capturedAt: AFTER_POST, odds: 10 }),
+        ]);
+
+        const rows = await repository.listPredictionsWithResults("2026-10-18");
+
+        expect(rows.map((row) => [row.raceId, row.odds])).toEqual([
+            [202605040701, 10],
+            [202605040702, 10],
+        ]);
+        // 発走時刻が分からないレースは除外の一覧にも出さない
+        expect(await repository.listRacesPredictedOnlyAfterPost("2026-10-18")).toEqual([]);
+    });
+
     test("is not removed by truncateAllTables, because the odds at capture time cannot be recovered", async () => {
         const modelId = await insertModel();
         await repository.insertPredictions([prediction({ modelId })]);
@@ -301,6 +371,52 @@ describe("box proposals", () => {
             hasResult: false,
             winningTickets: [],
         });
+    });
+
+    test("uses the last proposal made before the post time and lists a race proposed only afterwards", async () => {
+        const modelId = await insertModel();
+        // 発走 15:40 JST = 06:40:00Z
+        await seedRace(202605040701, "2026-10-18", "15:40");
+        await seedRace(202605040702, "2026-10-18", "15:40");
+        await repository.insertBoxProposal(
+            boxProposal({ modelId, capturedAt: new Date("2026-10-18T06:39:59Z"), horseNumbers: "1-2-3-4" }),
+        );
+        await repository.insertBoxProposal(
+            boxProposal({ modelId, capturedAt: new Date("2026-10-18T06:40:00Z"), horseNumbers: "1-2-5-6" }),
+        );
+        await repository.insertBoxProposal(
+            boxProposal({ modelId, capturedAt: new Date("2026-10-18T11:04:07Z"), horseNumbers: "2-3-5-6" }),
+        );
+        await repository.insertBoxProposal(
+            boxProposal({
+                modelId,
+                raceId: 202605040702,
+                raceName: "後だけS",
+                capturedAt: new Date("2026-10-18T11:04:07Z"),
+            }),
+        );
+
+        const rows = await repository.listBoxProposalsWithResults("2026-10-18");
+
+        expect(rows.map((row) => [row.raceId, row.horseNumbers])).toEqual([[202605040701, [1, 2, 3, 4]]]);
+        expect(await repository.listRacesProposedOnlyAfterPost("2026-10-18")).toEqual([
+            { raceId: 202605040702, raceName: "後だけS" },
+        ]);
+    });
+
+    test("falls back to the latest proposal when the post time is unknown", async () => {
+        const modelId = await insertModel();
+        await repository.insertBoxProposal(
+            boxProposal({ modelId, capturedAt: new Date("2026-10-18T00:00:00Z"), horseNumbers: "1-2-3-4" }),
+        );
+        await repository.insertBoxProposal(
+            boxProposal({ modelId, capturedAt: new Date("2026-10-18T11:04:07Z"), horseNumbers: "2-3-5-6" }),
+        );
+
+        const rows = await repository.listBoxProposalsWithResults("2026-10-18");
+
+        expect(rows.map((row) => row.horseNumbers)).toEqual([[2, 3, 5, 6]]);
+        expect(await repository.listRacesProposedOnlyAfterPost("2026-10-18")).toEqual([]);
     });
 
     test("returns every winning combination of a dead heat", async () => {

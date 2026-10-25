@@ -3,7 +3,7 @@
 // This software is released under the MIT License.
 //
 
-import type { BoxProposalWithResult, PredictionWithResult } from "../db/prediction-repository.ts";
+import type { BoxProposalWithResult, ExcludedRace, PredictionWithResult } from "../db/prediction-repository.ts";
 import type { BoxProposal } from "./ai-box.ts";
 import type { ImprovementStats, PeriodMetrics, PickStats } from "./evaluation.ts";
 import type { PredictTodayResult, RacePrediction } from "./live.ts";
@@ -238,25 +238,46 @@ export function formatPredictions(result: PredictTodayResult, criteria: ValueCri
     return `${lines.join("\n")}\n`;
 }
 
+// 検証から外したレースの一覧 多い場合は先頭の数件だけ名前を出す
+const MAX_LISTED_EXCLUDED_RACES = 5;
+
+function describeExcludedRaces(excluded: readonly ExcludedRace[]): string {
+    const names = excluded.slice(0, MAX_LISTED_EXCLUDED_RACES).map((race) => race.raceName);
+    const rest = excluded.length - names.length;
+    return `${names.join("、")}${rest > 0 ? ` ほか${rest}レース` : ""}`;
+}
+
 /**
  * 保存済みの予測と確定した結果の突き合わせを作る
  *
  * @param date - 開催日
  * @param rows - 予測と結果
+ * @param excluded - 発走後にしか予測を取得しておらず 検証から外したレース
  * @returns 表示する文章
  */
-export function formatVerification(date: string, rows: readonly PredictionWithResult[]): string {
+export function formatVerification(
+    date: string,
+    rows: readonly PredictionWithResult[],
+    excluded: readonly ExcludedRace[] = [],
+): string {
     if (rows.length === 0) {
-        return `${date} の保存済みの予測はありません (-P で予測してください)\n`;
+        return excluded.length === 0
+            ? `${date} の保存済みの予測はありません (-P で予測してください)\n`
+            : `${date} の発走前に取得した予測はありません (発走後にだけ取得した ${excluded.length}レースは検証から除外: ${describeExcludedRaces(excluded)})\n`;
     }
     const raceCount = new Set(rows.map((row) => row.raceId)).size;
     const picks = rows.filter((row) => row.isValuePick);
     const settled = picks.filter((row) => row.hasResult);
     const lines = [
-        `${date} の予測 ${raceCount}レース (レースごとに最後に取得した分) と結果の突き合わせ`,
+        `${date} の予測 ${raceCount}レース (レースごとに発走前に最後に取得した分 発走時刻が不明なレースは最後に取得した分) と結果の突き合わせ`,
         `結果が取り込み済みのレース: ${new Set(rows.filter((row) => row.hasResult).map((row) => row.raceId)).size}/${raceCount} (未取り込みは -U -S で取り込む)`,
-        "",
     ];
+    if (excluded.length > 0) {
+        lines.push(
+            `発走後にだけ取得したため検証から除外したレース: ${excluded.length} (${describeExcludedRaces(excluded)})`,
+        );
+    }
+    lines.push("");
     if (picks.length === 0) {
         lines.push("抽出した馬はいません。");
         return `${lines.join("\n")}\n`;
@@ -385,18 +406,30 @@ function describeTotals(label: string, settlements: readonly BoxSettlement[]): s
  *
  * @param date - 開催日
  * @param rows - 提案と結果
+ * @param excluded - 発走後にしか提案しておらず 検証から外したレース
  * @returns 表示する文章 提案が無い場合は空の文字列
  */
-export function formatBoxVerification(date: string, rows: readonly BoxProposalWithResult[]): string {
+export function formatBoxVerification(
+    date: string,
+    rows: readonly BoxProposalWithResult[],
+    excluded: readonly ExcludedRace[] = [],
+): string {
     if (rows.length === 0) {
-        return "";
+        return excluded.length === 0
+            ? ""
+            : `${date} の発走前の3連単Boxの提案はありません (発走後にだけ提案した ${excluded.length}レースは検証から除外: ${describeExcludedRaces(excluded)})\n`;
     }
     const settledRows = rows.filter((row) => row.hasResult && row.winningTickets.length > 0);
     const lines = [
-        `${date} の3連単Boxの提案 ${rows.length}レース (レースごとに最後の提案) と結果の突き合わせ`,
+        `${date} の3連単Boxの提案 ${rows.length}レース (レースごとに発走前の最後の提案 発走時刻が不明なレースは最後の提案) と結果の突き合わせ`,
         `結果が取り込み済みのレース: ${settledRows.length}/${rows.length} (未取り込みは -U -S で取り込む)`,
-        "",
     ];
+    if (excluded.length > 0) {
+        lines.push(
+            `発走後にだけ提案したため検証から除外したレース: ${excluded.length} (${describeExcludedRaces(excluded)})`,
+        );
+    }
+    lines.push("");
     for (const row of rows) {
         const proposed = settleBox(row.horseNumbers, row);
         const baseline = settleBox(row.baselineHorseNumbers, row);

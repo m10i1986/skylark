@@ -333,9 +333,19 @@ export async function runOperations(args: CliArguments, dependencies: OperationD
 
         if (args.isReport) {
             const date = args.date ?? formatLocalDate(new Date());
-            dependencies.output(formatVerification(date, await predictionRepository.listPredictionsWithResults(date)));
+            dependencies.output(
+                formatVerification(
+                    date,
+                    await predictionRepository.listPredictionsWithResults(date),
+                    await predictionRepository.listRacesPredictedOnlyAfterPost(date),
+                ),
+            );
             // 提案が無い日は何も出さない
-            const boxReport = formatBoxVerification(date, await predictionRepository.listBoxProposalsWithResults(date));
+            const boxReport = formatBoxVerification(
+                date,
+                await predictionRepository.listBoxProposalsWithResults(date),
+                await predictionRepository.listRacesProposedOnlyAfterPost(date),
+            );
             if (boxReport !== "") {
                 dependencies.output(boxReport);
             }

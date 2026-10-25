@@ -19,7 +19,12 @@ import {
     toRaceRecord,
 } from "../src/predict/live.ts";
 import type { ModelParameters } from "../src/predict/model.ts";
-import { formatPredictions, formatTrainingReport, formatVerification } from "../src/predict/report.ts";
+import {
+    formatBoxVerification,
+    formatPredictions,
+    formatTrainingReport,
+    formatVerification,
+} from "../src/predict/report.ts";
 import type { TrainingResult } from "../src/predict/train.ts";
 import { DEFAULT_VALUE_CRITERIA } from "../src/predict/value.ts";
 import type {
@@ -500,6 +505,61 @@ describe("reports", () => {
         // 結果が出た2頭に100円ずつ 2000円の払戻 = 回収率1000%
         expect(text).toContain("回収率1000%");
         expect(formatVerification(TODAY, [])).toContain("保存済みの予測はありません");
+    });
+
+    test("verification tells which snapshot is used and lists the races left out because they were predicted only after the post time", () => {
+        const row = {
+            modelId: 1,
+            raceId: 1,
+            horseNumber: 6,
+            capturedAt: NOW,
+            raceName: "テストS",
+            horseName: "穴馬",
+            odds: 20,
+            popularity: 6,
+            marketProbability: 0.04,
+            modelProbability: 0.08,
+            modelRank: 2,
+            expectedValue: 1.6,
+            isValuePick: true,
+            orderOfFinish: 1,
+            hasResult: true,
+            winPayoff: 2000,
+        };
+        const excluded = [
+            { raceId: 2, raceName: "A" },
+            { raceId: 3, raceName: "B" },
+            { raceId: 4, raceName: "C" },
+            { raceId: 5, raceName: "D" },
+            { raceId: 6, raceName: "E" },
+            { raceId: 7, raceName: "F" },
+            { raceId: 8, raceName: "G" },
+        ];
+
+        const text = formatVerification(TODAY, [row], excluded);
+
+        expect(text).toContain("発走前に最後に取得した分");
+        // 名前を出すのは先頭の5件まで 残りは件数にする
+        expect(text).toContain("検証から除外したレース: 7 (A、B、C、D、E ほか2レース)");
+        // 除外が無い日は何も足さない
+        expect(formatVerification(TODAY, [row])).not.toContain("除外");
+    });
+
+    test("verification does not say there is no prediction when every prediction was made after the post time", () => {
+        const text = formatVerification(TODAY, [], [{ raceId: 2, raceName: "後だけS" }]);
+
+        expect(text).toContain("発走前に取得した予測はありません");
+        expect(text).toContain("後だけS");
+        expect(text).not.toContain("-P で予測してください");
+    });
+
+    test("box verification stays silent without proposals and reports the races left out", () => {
+        expect(formatBoxVerification(TODAY, [])).toBe("");
+
+        const text = formatBoxVerification(TODAY, [], [{ raceId: 2, raceName: "後だけS" }]);
+
+        expect(text).toContain("発走前の3連単Boxの提案はありません");
+        expect(text).toContain("後だけS");
     });
 
     test("training report shows the margin of error and warns that a small improvement is not an edge", () => {

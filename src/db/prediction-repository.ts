@@ -3,7 +3,8 @@
 // This software is released under the MIT License.
 //
 
-import { and, asc, desc, eq, gte, inArray, lt, max, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lt, max, type SQL, sql } from "drizzle-orm";
+import type { AnyPgColumn } from "drizzle-orm/pg-core";
 
 import { payoutKey, type WinPayouts } from "../predict/evaluation.ts";
 import { parseHorseNumbers, type TrifectaResult } from "../predict/trifecta.ts";
@@ -85,6 +86,21 @@ export type BoxProposalWithResult = {
     // 確定した3連単(着順どおりの馬番と100円あたりの払戻) 同着では複数 未取り込みや払戻の無いレースは空
     winningTickets: TrifectaResult[];
 };
+
+/** 発走前に取得した分が無く 報告の対象から外れたレース */
+export type ExcludedRace = {
+    raceId: number;
+    raceName: string;
+};
+
+// 発走の時点(日本時間) レース情報か発走時刻が無い場合はnull
+const POST_INSTANT = sql`((${raceInfoTable.date} + ${raceInfoTable.postTime}) at time zone 'Asia/Tokyo')`;
+
+// 発走前に取得した分 発走時刻が分からない場合は取得時刻で絞らない
+// 発走後のオッズは確定値で 抽出や提案の条件を事後に知った値で評価してしまうため 検証には使わない
+function capturedBeforePost(capturedAt: AnyPgColumn): SQL {
+    return sql`(${POST_INSTANT} is null or ${capturedAt} < ${POST_INSTANT})`;
+}
 
 // 払戻表の馬番「3->5->8」を馬番の配列にする 形式が違う場合はnull
 function parseTrifectaCombination(text: string): number[] | null {
@@ -259,7 +275,10 @@ export class PredictionRepository {
     }
 
     /**
-     * 指定した開催日の予測を レースごとに最新の取得分だけ 結果と突き合わせて返す
+     * 指定した開催日の予測を レースごとに発走前に取得した最後の分だけ 結果と突き合わせて返す
+     *
+     * 発走時刻が分からないレース(レース情報が未取り込みなど)は 取得時刻で絞らず最後の取得分を使う
+     * 発走後にしか取得していないレースは含めない(listRacesPredictedOnlyAfterPost)
      *
      * @param raceDate - 開催日(YYYY-MM-DD)
      * @returns レースID・馬番の昇順の予測
@@ -271,7 +290,8 @@ export class PredictionRepository {
                 capturedAt: max(predictionTable.capturedAt).as("latest_captured_at"),
             })
             .from(predictionTable)
-            .where(eq(predictionTable.raceDate, raceDate))
+            .leftJoin(raceInfoTable, eq(raceInfoTable.id, predictionTable.raceId))
+            .where(and(eq(predictionTable.raceDate, raceDate), capturedBeforePost(predictionTable.capturedAt)))
             .groupBy(predictionTable.raceId)
             .as("latest");
 
@@ -320,6 +340,24 @@ export class PredictionRepository {
     }
 
     /**
+     * 発走後にしか予測を取得していないレース 発走前の予測が無いため listPredictionsWithResults の対象から外れる
+     *
+     * @param raceDate - 開催日(YYYY-MM-DD)
+     * @returns レースIDの昇順のレース
+     */
+    async listRacesPredictedOnlyAfterPost(raceDate: string): Promise<ExcludedRace[]> {
+        const rows = await this.db
+            .select({ raceId: predictionTable.raceId, raceName: max(predictionTable.raceName) })
+            .from(predictionTable)
+            .innerJoin(raceInfoTable, eq(raceInfoTable.id, predictionTable.raceId))
+            .where(and(eq(predictionTable.raceDate, raceDate), sql`${raceInfoTable.postTime} is not null`))
+            .groupBy(predictionTable.raceId, raceInfoTable.date, raceInfoTable.postTime)
+            .having(sql`min(${predictionTable.capturedAt}) >= ${POST_INSTANT}`)
+            .orderBy(asc(predictionTable.raceId));
+        return rows.map((row) => ({ raceId: row.raceId, raceName: row.raceName ?? "" }));
+    }
+
+    /**
      * Boxの提案を保存する
      *
      * @param record - 提案
@@ -329,7 +367,10 @@ export class PredictionRepository {
     }
 
     /**
-     * 指定した開催日のBoxの提案を レースごとに最後の提案だけ 確定した3連単と突き合わせて返す
+     * 指定した開催日のBoxの提案を レースごとに発走前の最後の提案だけ 確定した3連単と突き合わせて返す
+     *
+     * 発走時刻が分からないレースは 取得時刻で絞らず最後の提案を使う
+     * 発走後にしか提案していないレースは含めない(listRacesProposedOnlyAfterPost)
      *
      * @param raceDate - 開催日(YYYY-MM-DD)
      * @returns レースIDの昇順の提案
@@ -338,7 +379,8 @@ export class PredictionRepository {
         const latest = this.db
             .select({ latestId: max(boxProposalTable.id).as("latest_id") })
             .from(boxProposalTable)
-            .where(eq(boxProposalTable.raceDate, raceDate))
+            .leftJoin(raceInfoTable, eq(raceInfoTable.id, boxProposalTable.raceId))
+            .where(and(eq(boxProposalTable.raceDate, raceDate), capturedBeforePost(boxProposalTable.capturedAt)))
             .groupBy(boxProposalTable.raceId)
             .as("latest");
         const proposals = await this.db
@@ -403,5 +445,23 @@ export class PredictionRepository {
                 } satisfies BoxProposalWithResult,
             ];
         });
+    }
+
+    /**
+     * 発走後にしかBoxを提案していないレース 発走前の提案が無いため listBoxProposalsWithResults の対象から外れる
+     *
+     * @param raceDate - 開催日(YYYY-MM-DD)
+     * @returns レースIDの昇順のレース
+     */
+    async listRacesProposedOnlyAfterPost(raceDate: string): Promise<ExcludedRace[]> {
+        const rows = await this.db
+            .select({ raceId: boxProposalTable.raceId, raceName: max(boxProposalTable.raceName) })
+            .from(boxProposalTable)
+            .innerJoin(raceInfoTable, eq(raceInfoTable.id, boxProposalTable.raceId))
+            .where(and(eq(boxProposalTable.raceDate, raceDate), sql`${raceInfoTable.postTime} is not null`))
+            .groupBy(boxProposalTable.raceId, raceInfoTable.date, raceInfoTable.postTime)
+            .having(sql`min(${boxProposalTable.capturedAt}) >= ${POST_INSTANT}`)
+            .orderBy(asc(boxProposalTable.raceId));
+        return rows.map((row) => ({ raceId: row.raceId, raceName: row.raceName ?? "" }));
     }
 }
