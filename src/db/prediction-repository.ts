@@ -3,13 +3,16 @@
 // This software is released under the MIT License.
 //
 
-import { and, asc, desc, eq, gte, lt, max, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lt, max, sql } from "drizzle-orm";
 
 import { payoutKey, type WinPayouts } from "../predict/evaluation.ts";
+import { parseHorseNumbers, type TrifectaResult } from "../predict/trifecta.ts";
 import type { RaceRecord, RunnerRecord } from "../predict/types.ts";
 import type { Database } from "./crud.ts";
 import { uniqueSortedByKey } from "./ordering.ts";
 import {
+    type BoxProposalRecord,
+    boxProposalTable,
     type PredictionModelRecord,
     type PredictionRecord,
     payoffTable,
@@ -21,6 +24,9 @@ import {
 
 /** 単勝の券種(util.ts の TICKET_TYPES の添字) */
 const WIN_TICKET_TYPE = 0;
+
+/** 三連単の券種(util.ts の TICKET_TYPES の添字) */
+export const TRIFECTA_TICKET_TYPE = 8;
 
 /** 保存するモデルの内容 */
 export type NewPredictionModel = Pick<
@@ -53,6 +59,41 @@ export type PredictionWithResult = {
     // 単勝の払戻(100円あたり) 勝っていない または未取り込みの場合はnull
     winPayoff: number | null;
 };
+
+/** Boxの提案と その後に確定した3連単を突き合わせた1レース分 */
+export type BoxProposalWithResult = {
+    id: number;
+    modelId: number;
+    raceId: number;
+    raceName: string;
+    capturedAt: Date;
+    source: "ai" | "fallback";
+    aiModel: string | null;
+    maxTickets: number;
+    // 馬番(昇順)
+    horseNumbers: number[];
+    ticketCount: number;
+    hitProbability: number;
+    bestHitProbability: number;
+    // 点数の上限内で最も的中確率が高いBox AIの選択と比べるための基準
+    baselineHorseNumbers: number[];
+    baselineHitProbability: number;
+    reason: string;
+    caution: string | null;
+    // 結果が取り込み済みか
+    hasResult: boolean;
+    // 確定した3連単(着順どおりの馬番と100円あたりの払戻) 同着では複数 未取り込みや払戻の無いレースは空
+    winningTickets: TrifectaResult[];
+};
+
+// 払戻表の馬番「3->5->8」を馬番の配列にする 形式が違う場合はnull
+function parseTrifectaCombination(text: string): number[] | null {
+    const parts = text.split("->");
+    if (parts.length !== 3 || !parts.every((part) => /^\d{1,2}$/.test(part))) {
+        return null;
+    }
+    return parts.map(Number);
+}
 
 // jsonb列へJSON文字列をそのまま渡すと Bun.SQL が文字列をさらにJSON化して二重にエンコードされるため
 // text として受け取りサーバー側で jsonb へ変換する(SkylarkCrud.upsertFeatures と同じ理由)
@@ -276,5 +317,91 @@ export class PredictionRepository {
             .orderBy(asc(predictionTable.raceId), asc(predictionTable.horseNumber));
 
         return rows.map(({ resultRaceId, ...row }) => ({ ...row, hasResult: resultRaceId != null }));
+    }
+
+    /**
+     * Boxの提案を保存する
+     *
+     * @param record - 提案
+     */
+    async insertBoxProposal(record: BoxProposalRecord): Promise<void> {
+        await this.db.insert(boxProposalTable).values(record);
+    }
+
+    /**
+     * 指定した開催日のBoxの提案を レースごとに最後の提案だけ 確定した3連単と突き合わせて返す
+     *
+     * @param raceDate - 開催日(YYYY-MM-DD)
+     * @returns レースIDの昇順の提案
+     */
+    async listBoxProposalsWithResults(raceDate: string): Promise<BoxProposalWithResult[]> {
+        const latest = this.db
+            .select({ latestId: max(boxProposalTable.id).as("latest_id") })
+            .from(boxProposalTable)
+            .where(eq(boxProposalTable.raceDate, raceDate))
+            .groupBy(boxProposalTable.raceId)
+            .as("latest");
+        const proposals = await this.db
+            .select({ proposal: boxProposalTable })
+            .from(boxProposalTable)
+            .innerJoin(latest, eq(latest.latestId, boxProposalTable.id))
+            .orderBy(asc(boxProposalTable.raceId));
+        if (proposals.length === 0) {
+            return [];
+        }
+
+        const raceIds = proposals.map((row) => row.proposal.raceId);
+        const racesWithResult = new Set(
+            (
+                await this.db
+                    .selectDistinct({ raceId: raceResultTable.raceId })
+                    .from(raceResultTable)
+                    .where(inArray(raceResultTable.raceId, raceIds))
+            ).map((row) => row.raceId),
+        );
+        const payoffRows = await this.db
+            .select({ raceId: payoffTable.raceId, horseNumbers: payoffTable.horseNumbers, payoff: payoffTable.payoff })
+            .from(payoffTable)
+            .where(and(inArray(payoffTable.raceId, raceIds), eq(payoffTable.ticketType, TRIFECTA_TICKET_TYPE)));
+        const ticketsByRace = new Map<number, TrifectaResult[]>();
+        for (const row of payoffRows) {
+            const combination = parseTrifectaCombination(row.horseNumbers);
+            if (combination != null) {
+                const tickets = ticketsByRace.get(row.raceId) ?? [];
+                tickets.push({ horseNumbers: combination, payoff: row.payoff });
+                ticketsByRace.set(row.raceId, tickets);
+            }
+        }
+
+        return proposals.flatMap(({ proposal }) => {
+            const horseNumbers = parseHorseNumbers(proposal.horseNumbers);
+            const baselineHorseNumbers = parseHorseNumbers(proposal.baselineHorseNumbers);
+            // 保存した馬番を読めない行(通常は無い)は 突き合わせずに読み飛ばす
+            if (horseNumbers == null || baselineHorseNumbers == null) {
+                return [];
+            }
+            return [
+                {
+                    id: proposal.id,
+                    modelId: proposal.modelId,
+                    raceId: proposal.raceId,
+                    raceName: proposal.raceName,
+                    capturedAt: proposal.capturedAt,
+                    source: proposal.source === "ai" ? "ai" : "fallback",
+                    aiModel: proposal.aiModel,
+                    maxTickets: proposal.maxTickets,
+                    horseNumbers,
+                    ticketCount: proposal.ticketCount,
+                    hitProbability: proposal.hitProbability,
+                    bestHitProbability: proposal.bestHitProbability,
+                    baselineHorseNumbers,
+                    baselineHitProbability: proposal.baselineHitProbability,
+                    reason: proposal.reason,
+                    caution: proposal.caution,
+                    hasResult: racesWithResult.has(proposal.raceId),
+                    winningTickets: ticketsByRace.get(proposal.raceId) ?? [],
+                } satisfies BoxProposalWithResult,
+            ];
+        });
     }
 }

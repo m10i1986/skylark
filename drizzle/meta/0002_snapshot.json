@@ -1,0 +1,1082 @@
+{
+  "id": "b4ac6adc-1477-4c7b-b2b6-36b1fc5eba6d",
+  "prevId": "96724f42-6310-4bcb-9d7c-733690d1cb41",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "public.box_proposal_tbl": {
+      "name": "box_proposal_tbl",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "identity": {
+            "type": "always",
+            "name": "box_proposal_tbl_id_seq",
+            "schema": "public",
+            "increment": "1",
+            "startWith": "1",
+            "minValue": "1",
+            "maxValue": "2147483647",
+            "cache": "1",
+            "cycle": false
+          }
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "model_id": {
+          "name": "model_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "race_id": {
+          "name": "race_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "captured_at": {
+          "name": "captured_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "race_date": {
+          "name": "race_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "race_name": {
+          "name": "race_name",
+          "type": "varchar(256)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source": {
+          "name": "source",
+          "type": "varchar(8)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ai_model": {
+          "name": "ai_model",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "max_tickets": {
+          "name": "max_tickets",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "horse_numbers": {
+          "name": "horse_numbers",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ticket_count": {
+          "name": "ticket_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "hit_probability": {
+          "name": "hit_probability",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "best_hit_probability": {
+          "name": "best_hit_probability",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "baseline_horse_numbers": {
+          "name": "baseline_horse_numbers",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "baseline_hit_probability": {
+          "name": "baseline_hit_probability",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "caution": {
+          "name": "caution",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "idx_box_proposal_race_date": {
+          "name": "idx_box_proposal_race_date",
+          "columns": [
+            {
+              "expression": "race_date",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_box_proposal_race": {
+          "name": "idx_box_proposal_race",
+          "columns": [
+            {
+              "expression": "race_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "box_proposal_tbl_model_id_prediction_model_tbl_id_fk": {
+          "name": "box_proposal_tbl_model_id_prediction_model_tbl_id_fk",
+          "tableFrom": "box_proposal_tbl",
+          "tableTo": "prediction_model_tbl",
+          "columnsFrom": [
+            "model_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.feature_tbl": {
+      "name": "feature_tbl",
+      "schema": "",
+      "columns": {
+        "horse_id": {
+          "name": "horse_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "race_id": {
+          "name": "race_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "jockey_id": {
+          "name": "jockey_id",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "trainer_id": {
+          "name": "trainer_id",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "calculation_result_json": {
+          "name": "calculation_result_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "feature_tbl_horse_id_horse_tbl_id_fk": {
+          "name": "feature_tbl_horse_id_horse_tbl_id_fk",
+          "tableFrom": "feature_tbl",
+          "tableTo": "horse_tbl",
+          "columnsFrom": [
+            "horse_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "feature_tbl_race_id_race_info_tbl_id_fk": {
+          "name": "feature_tbl_race_id_race_info_tbl_id_fk",
+          "tableFrom": "feature_tbl",
+          "tableTo": "race_info_tbl",
+          "columnsFrom": [
+            "race_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "feature_tbl_horse_id_race_id_pk": {
+          "name": "feature_tbl_horse_id_race_id_pk",
+          "columns": [
+            "horse_id",
+            "race_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.horse_tbl": {
+      "name": "horse_tbl",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigint",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "horse_name": {
+          "name": "horse_name",
+          "type": "varchar(256)",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.jockey_tbl": {
+      "name": "jockey_tbl",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(32)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "jockey_name": {
+          "name": "jockey_name",
+          "type": "varchar(256)",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.owner_tbl": {
+      "name": "owner_tbl",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(32)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "owner_name": {
+          "name": "owner_name",
+          "type": "varchar(256)",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.payoff_tbl": {
+      "name": "payoff_tbl",
+      "schema": "",
+      "columns": {
+        "race_id": {
+          "name": "race_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ticket_type": {
+          "name": "ticket_type",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "horse_numbers": {
+          "name": "horse_numbers",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "payoff": {
+          "name": "payoff",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "popularity": {
+          "name": "popularity",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "payoff_tbl_race_id_race_info_tbl_id_fk": {
+          "name": "payoff_tbl_race_id_race_info_tbl_id_fk",
+          "tableFrom": "payoff_tbl",
+          "tableTo": "race_info_tbl",
+          "columnsFrom": [
+            "race_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "payoff_tbl_race_id_ticket_type_horse_numbers_pk": {
+          "name": "payoff_tbl_race_id_ticket_type_horse_numbers_pk",
+          "columns": [
+            "race_id",
+            "ticket_type",
+            "horse_numbers"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.prediction_model_tbl": {
+      "name": "prediction_model_tbl",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "identity": {
+            "type": "always",
+            "name": "prediction_model_tbl_id_seq",
+            "schema": "public",
+            "increment": "1",
+            "startWith": "1",
+            "minValue": "1",
+            "maxValue": "2147483647",
+            "cache": "1",
+            "cycle": false
+          }
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "circuit": {
+          "name": "circuit",
+          "type": "varchar(8)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "train_from": {
+          "name": "train_from",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "valid_from": {
+          "name": "valid_from",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "test_from": {
+          "name": "test_from",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "data_to": {
+          "name": "data_to",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "parameters_json": {
+          "name": "parameters_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "metrics_json": {
+          "name": "metrics_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.prediction_tbl": {
+      "name": "prediction_tbl",
+      "schema": "",
+      "columns": {
+        "model_id": {
+          "name": "model_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "race_id": {
+          "name": "race_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "horse_number": {
+          "name": "horse_number",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "captured_at": {
+          "name": "captured_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "race_date": {
+          "name": "race_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "race_name": {
+          "name": "race_name",
+          "type": "varchar(256)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "horse_id": {
+          "name": "horse_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "horse_name": {
+          "name": "horse_name",
+          "type": "varchar(256)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "odds": {
+          "name": "odds",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "popularity": {
+          "name": "popularity",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "market_probability": {
+          "name": "market_probability",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "model_probability": {
+          "name": "model_probability",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "model_rank": {
+          "name": "model_rank",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expected_value": {
+          "name": "expected_value",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "is_value_pick": {
+          "name": "is_value_pick",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "idx_prediction_race_date": {
+          "name": "idx_prediction_race_date",
+          "columns": [
+            {
+              "expression": "race_date",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "prediction_tbl_model_id_prediction_model_tbl_id_fk": {
+          "name": "prediction_tbl_model_id_prediction_model_tbl_id_fk",
+          "tableFrom": "prediction_tbl",
+          "tableTo": "prediction_model_tbl",
+          "columnsFrom": [
+            "model_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "prediction_tbl_race_id_horse_number_captured_at_pk": {
+          "name": "prediction_tbl_race_id_horse_number_captured_at_pk",
+          "columns": [
+            "race_id",
+            "horse_number",
+            "captured_at"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.race_info_tbl": {
+      "name": "race_info_tbl",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigint",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "race_name": {
+          "name": "race_name",
+          "type": "varchar(256)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "date": {
+          "name": "date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "post_time": {
+          "name": "post_time",
+          "type": "time",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "distance": {
+          "name": "distance",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "weather": {
+          "name": "weather",
+          "type": "varchar(8)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "race_number": {
+          "name": "race_number",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "run_direction": {
+          "name": "run_direction",
+          "type": "varchar(8)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "track_surface": {
+          "name": "track_surface",
+          "type": "varchar(8)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "track_condition": {
+          "name": "track_condition",
+          "type": "varchar(8)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "track_condition_score": {
+          "name": "track_condition_score",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "place_detail": {
+          "name": "place_detail",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "race_grade": {
+          "name": "race_grade",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "race_class": {
+          "name": "race_class",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "idx_race_name": {
+          "name": "idx_race_name",
+          "columns": [
+            {
+              "expression": "race_name",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_date_post_time": {
+          "name": "idx_date_post_time",
+          "columns": [
+            {
+              "expression": "date",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "post_time",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.race_result_tbl": {
+      "name": "race_result_tbl",
+      "schema": "",
+      "columns": {
+        "race_id": {
+          "name": "race_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "horse_number": {
+          "name": "horse_number",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "order_of_finish": {
+          "name": "order_of_finish",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "bracket_number": {
+          "name": "bracket_number",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "horse_id": {
+          "name": "horse_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sex": {
+          "name": "sex",
+          "type": "varchar(8)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "age": {
+          "name": "age",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "basis_weight": {
+          "name": "basis_weight",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "jockey_id": {
+          "name": "jockey_id",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "finishing_time": {
+          "name": "finishing_time",
+          "type": "time",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "margin": {
+          "name": "margin",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "speed_figure": {
+          "name": "speed_figure",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "passing_rank": {
+          "name": "passing_rank",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "last_phase": {
+          "name": "last_phase",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "odds": {
+          "name": "odds",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "popularity": {
+          "name": "popularity",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "horse_weight": {
+          "name": "horse_weight",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "horse_weight_diff": {
+          "name": "horse_weight_diff",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "remark": {
+          "name": "remark",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "stable": {
+          "name": "stable",
+          "type": "varchar(8)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "trainer_id": {
+          "name": "trainer_id",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "owner_id": {
+          "name": "owner_id",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "earning_money": {
+          "name": "earning_money",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "idx_horse_id": {
+          "name": "idx_horse_id",
+          "columns": [
+            {
+              "expression": "horse_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_race_horse": {
+          "name": "idx_race_horse",
+          "columns": [
+            {
+              "expression": "race_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "horse_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_race_jockey": {
+          "name": "idx_race_jockey",
+          "columns": [
+            {
+              "expression": "race_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "jockey_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_race_trainer": {
+          "name": "idx_race_trainer",
+          "columns": [
+            {
+              "expression": "race_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "trainer_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_race_owner": {
+          "name": "idx_race_owner",
+          "columns": [
+            {
+              "expression": "race_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "owner_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "race_result_tbl_race_id_race_info_tbl_id_fk": {
+          "name": "race_result_tbl_race_id_race_info_tbl_id_fk",
+          "tableFrom": "race_result_tbl",
+          "tableTo": "race_info_tbl",
+          "columnsFrom": [
+            "race_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "race_result_tbl_horse_id_horse_tbl_id_fk": {
+          "name": "race_result_tbl_horse_id_horse_tbl_id_fk",
+          "tableFrom": "race_result_tbl",
+          "tableTo": "horse_tbl",
+          "columnsFrom": [
+            "horse_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "race_result_tbl_race_id_horse_number_pk": {
+          "name": "race_result_tbl_race_id_horse_number_pk",
+          "columns": [
+            "race_id",
+            "horse_number"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.trainer_tbl": {
+      "name": "trainer_tbl",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(32)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "trainer_name": {
+          "name": "trainer_name",
+          "type": "varchar(256)",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {},
+  "schemas": {},
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "views": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}

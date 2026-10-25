@@ -3,10 +3,12 @@
 // This software is released under the MIT License.
 //
 
-import type { PredictionWithResult } from "../db/prediction-repository.ts";
+import type { BoxProposalWithResult, PredictionWithResult } from "../db/prediction-repository.ts";
+import type { BoxProposal } from "./ai-box.ts";
 import type { ImprovementStats, PeriodMetrics, PickStats } from "./evaluation.ts";
 import type { PredictTodayResult, RacePrediction } from "./live.ts";
 import type { TrainingResult } from "./train.ts";
+import { boxPayoff, boxTicketCount, formatHorseNumbers, TICKET_PRICE_YEN } from "./trifecta.ts";
 import type { ValueCriteria } from "./value.ts";
 
 // 端末で全角は半角2つ分の幅 半角カナ(U+FF61〜U+FF9F)は1つ分
@@ -278,6 +280,160 @@ export function formatVerification(date: string, rows: readonly PredictionWithRe
         lines.push(
             "",
             `結果が出た${settled.length}頭: 的中${hits.length} 回収率${percent(payout / (settled.length * 100), 0)} (単勝100円ずつ)`,
+        );
+    }
+    return `${lines.join("\n")}\n`;
+}
+
+const yen = (value: number): string => `${Math.round(value).toLocaleString("en-US")}円`;
+
+// 頭数と点数と購入額 例: 4頭 24点 2,400円
+function describeBox(horseNumbers: readonly number[]): string {
+    const tickets = boxTicketCount(horseNumbers.length);
+    return `${horseNumbers.length}頭 ${tickets}点 ${yen(tickets * TICKET_PRICE_YEN)}`;
+}
+
+/** 3連単Boxの提案の報告に必要な内容 */
+export type BoxProposalReport = {
+    // 開催日(YYYY-MM-DD)
+    date: string;
+    proposals: readonly BoxProposal[];
+    // 予測や提案ができなかったレースID
+    skippedRaceIds: readonly number[];
+    // 点数の上限
+    maxTickets: number;
+};
+
+/**
+ * 3連単Boxの提案の報告を作る
+ *
+ * @param report - 提案と設定
+ * @returns 表示する文章
+ */
+export function formatBoxProposals(report: BoxProposalReport): string {
+    const { date, proposals, skippedRaceIds, maxTickets } = report;
+    const lines = [
+        `3連単Boxの提案 ${date} 点数の上限${maxTickets}点(${yen(maxTickets * TICKET_PRICE_YEN)})`,
+        "  的中確率は、モデルの勝率から Harville 式で求めた目安です(強い馬ほど上位に偏る仮定で、実際とはずれます)。",
+        "",
+    ];
+    for (const proposal of proposals) {
+        const postTime = proposal.postTime == null ? "" : ` ${proposal.postTime}発走`;
+        lines.push(`■ ${proposal.raceName}${postTime} (race ${proposal.raceId})`);
+        lines.push(`  Box: ${formatHorseNumbers(proposal.horseNumbers)}  ${describeBox(proposal.horseNumbers)}`);
+        for (const horse of proposal.horses) {
+            lines.push(
+                `    ${String(horse.horseNumber).padStart(2)}番 ${padEndDisplay(horse.horseName ?? "", 18)}` +
+                    ` ${horse.popularity}番人気 ${horse.odds.toFixed(1)}倍 モデル勝率${percent(horse.modelProbability)}`,
+            );
+        }
+        const baseline = proposal.baseline.horseNumbers;
+        lines.push(
+            `  的中確率: ${percent(proposal.hitProbability)}` +
+                ` (同じ頭数の最良 ${percent(proposal.bestHitProbability)}、` +
+                `点数の上限内の最良 ${formatHorseNumbers(baseline)} の${percent(proposal.baseline.hitProbability)})`,
+        );
+        lines.push(
+            proposal.source === "ai"
+                ? `  選定: AI (${proposal.aiModel ?? "不明"})`
+                : "  選定: AIを使えず、点数の上限内で的中確率が最も高いBoxにしました",
+        );
+        lines.push(`  理由: ${proposal.reason}`);
+        if (proposal.caution != null) {
+            lines.push(`  注意: ${proposal.caution}`);
+        }
+        lines.push("");
+    }
+    if (proposals.length === 0) {
+        lines.push("提案できたレースはありません。", "");
+    }
+    if (skippedRaceIds.length > 0) {
+        lines.push(`提案できなかったレース: ${skippedRaceIds.join(" ")} (発売前でオッズが無い場合など)`, "");
+    }
+    lines.push(
+        "【注意】3連単のオッズは使っていないため、期待値(回収率)は見積もっていません。3連単は控除率が高く(払戻率は7割台)、",
+        "  的中も回収も保証しません。勝率のモデルは市場に対する上積みを確認できていません(--train の報告を参照)。",
+        "  提案は保存してあり、レースが確定して結果を取り込んだら --report で実際の3連単と突き合わせられます。",
+    );
+    return `${lines.join("\n")}\n`;
+}
+
+type BoxSettlement = { cost: number; payoff: number; isHit: boolean };
+
+// Boxを1点100円ずつ買った場合の購入額と払戻
+function settleBox(horseNumbers: readonly number[], row: BoxProposalWithResult): BoxSettlement {
+    const payoff = boxPayoff(horseNumbers, row.winningTickets);
+    return { cost: boxTicketCount(horseNumbers.length) * TICKET_PRICE_YEN, payoff, isHit: payoff > 0 };
+}
+
+function describeSettlement(settlement: BoxSettlement): string {
+    return settlement.isHit ? `的中 払戻${yen(settlement.payoff)}` : "外れ";
+}
+
+function describeTotals(label: string, settlements: readonly BoxSettlement[]): string {
+    const cost = settlements.reduce((sum, item) => sum + item.cost, 0);
+    const payoff = settlements.reduce((sum, item) => sum + item.payoff, 0);
+    const hits = settlements.filter((item) => item.isHit).length;
+    return `  ${label}: 的中${hits}/${settlements.length} 購入${yen(cost)} 払戻${yen(payoff)} 回収率${percent(payoff / cost, 0)}`;
+}
+
+/**
+ * 保存済みのBoxの提案と 確定した3連単の突き合わせを作る
+ *
+ * 提案と 基準(点数の上限内で的中確率が最も高いBox)を 同じレースで比べる
+ * AIを使えず切り替えた提案は基準と同じBoxなので 差はAIの選定によるものになる
+ *
+ * @param date - 開催日
+ * @param rows - 提案と結果
+ * @returns 表示する文章 提案が無い場合は空の文字列
+ */
+export function formatBoxVerification(date: string, rows: readonly BoxProposalWithResult[]): string {
+    if (rows.length === 0) {
+        return "";
+    }
+    const settledRows = rows.filter((row) => row.hasResult && row.winningTickets.length > 0);
+    const lines = [
+        `${date} の3連単Boxの提案 ${rows.length}レース (レースごとに最後の提案) と結果の突き合わせ`,
+        `結果が取り込み済みのレース: ${settledRows.length}/${rows.length} (未取り込みは -U -S で取り込む)`,
+        "",
+    ];
+    for (const row of rows) {
+        const proposed = settleBox(row.horseNumbers, row);
+        const baseline = settleBox(row.baselineHorseNumbers, row);
+        const source = row.source === "ai" ? "AI" : "AI不使用";
+        lines.push(`■ ${row.raceName} (race ${row.raceId})`);
+        if (!row.hasResult) {
+            lines.push(
+                `  提案(${source}) ${formatHorseNumbers(row.horseNumbers)} ${describeBox(row.horseNumbers)}` +
+                    ` 的中確率${percent(row.hitProbability)} → 結果未取り込み`,
+            );
+        } else if (row.winningTickets.length === 0) {
+            lines.push(
+                `  提案(${source}) ${formatHorseNumbers(row.horseNumbers)} ${describeBox(row.horseNumbers)}` +
+                    " → 3連単の払戻の記録なし(中止など)",
+            );
+        } else {
+            lines.push(
+                `  提案(${source}) ${formatHorseNumbers(row.horseNumbers)} ${describeBox(row.horseNumbers)}` +
+                    ` 的中確率${percent(row.hitProbability)} → ${describeSettlement(proposed)}`,
+                `  基準 ${formatHorseNumbers(row.baselineHorseNumbers)} ${describeBox(row.baselineHorseNumbers)}` +
+                    ` 的中確率${percent(row.baselineHitProbability)} → ${describeSettlement(baseline)}`,
+            );
+        }
+    }
+    if (settledRows.length > 0) {
+        lines.push(
+            "",
+            `結果が出た${settledRows.length}レース (1点${TICKET_PRICE_YEN}円ずつ)`,
+            describeTotals(
+                "提案",
+                settledRows.map((row) => settleBox(row.horseNumbers, row)),
+            ),
+            describeTotals(
+                "基準",
+                settledRows.map((row) => settleBox(row.baselineHorseNumbers, row)),
+            ),
+            "  基準は点数の上限内で的中確率が最も高いBoxです。レース数が少ないうちは、回収率の差は偶然に左右されます。",
         );
     }
     return `${lines.join("\n")}\n`;

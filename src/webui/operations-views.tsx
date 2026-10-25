@@ -234,9 +234,15 @@ export function OperationsPage(props: OperationsPageProps): ReactNode {
                             values={values}
                         />
                         <CheckboxField
+                            name="aiBox"
+                            label="3連単Boxの提案 (-B, --ai-box)"
+                            description="指定したレースを予測し、AI(Claude)に3連単Boxで買う馬を選ばせます。レースごとに Claude API を呼ぶため料金がかかります(ANTHROPIC_API_KEY が必要)。レース ID の指定が必須で、1 回に 12 件までです。"
+                            values={values}
+                        />
+                        <CheckboxField
                             name="report"
                             label="予測と確定結果の突き合わせ (--report)"
-                            description="保存済みの予測を、確定した結果と突き合わせます。"
+                            description="保存済みの予測とBoxの提案を、確定した結果と突き合わせます。"
                             values={values}
                         />
                     </CardContent>
@@ -318,6 +324,20 @@ export function OperationsPage(props: OperationsPageProps): ReactNode {
                             </div>
                         </div>
 
+                        <div>
+                            <h3 className="mb-3 text-sm font-medium">3連単Box (-B)</h3>
+                            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                                <InputField
+                                    name="boxMaxTickets"
+                                    label="点数の上限 (--box-max-tickets)"
+                                    hint="6 〜 336。3頭=6点、4頭=24点、5頭=60点、6頭=120点(1点100円)"
+                                    placeholder={String(defaults.boxMaxTickets)}
+                                    inputMode="numeric"
+                                    values={values}
+                                />
+                            </div>
+                        </div>
+
                         <div className="grid gap-4">
                             <CheckboxField
                                 name="verbose"
@@ -335,7 +355,8 @@ export function OperationsPage(props: OperationsPageProps): ReactNode {
                         <CardTitle>レース ID</CardTitle>
                         <CardDescription>
                             -S は指定したレースだけをダウンロードし、-P は指定したレースだけを予測します。空欄の場合は、
-                            -S は一覧ファイルのレース、-P は当日の全レースが対象です。
+                            -S は一覧ファイルのレース、-P は当日の全レースが対象です。-B
+                            は、指定したレースだけが対象です。
                         </CardDescription>
                     </CardHeader>
                     <CardContent className="grid gap-2">
@@ -381,7 +402,7 @@ export function OperationsPage(props: OperationsPageProps): ReactNode {
                             <CheckboxField
                                 name="rebuildAllTables"
                                 label="全テーブルの行を削除する (--rebuild-all-tables)"
-                                description="レース結果や特徴量など、すべてのテーブルの行を削除します。取得時のオッズを残した予測とモデルは削除しません。"
+                                description="レース結果や特徴量など、すべてのテーブルの行を削除します。取得時のオッズを残した予測とBoxの提案、モデルは削除しません。"
                                 values={values}
                             />
                             <div className="pl-7">

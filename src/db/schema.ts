@@ -195,6 +195,50 @@ export const predictionTable = pgTable(
     ],
 );
 
+/**
+ * 3連単Boxの提案 AIが選んだ(AIを使えず切り替えた場合は的中確率が最も高い)Boxを 勝率の元にしたオッズの取得時刻とともに残す
+ *
+ * 確定後に実際の3連単の払戻と突き合わせるための記録(--report) 提案は再現できないため prediction_tbl と同じく
+ * レース情報や馬への外部キーは持たない 馬番は昇順に「-」でつないだ文字列(例: 1-3-5-8)で保存する
+ */
+export const boxProposalTable = pgTable(
+    "box_proposal_tbl",
+    {
+        id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+        createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+        // 勝率の見積もりに使ったモデル
+        modelId: integer("model_id")
+            .notNull()
+            .references(() => predictionModelTable.id),
+        raceId: bigint("race_id", { mode: "number" }).notNull(),
+        // 勝率の元にしたオッズを取得した時刻 prediction_tbl の captured_at と一致する
+        capturedAt: timestamp("captured_at", { withTimezone: true, mode: "date" }).notNull(),
+        raceDate: date("race_date", { mode: "string" }).notNull(),
+        raceName: varchar("race_name", { length: 256 }).notNull(),
+        // ai=AIの選択 fallback=AIを使えず的中確率が最も高いBoxに切り替えた
+        source: varchar("source", { length: 8 }).notNull(),
+        // 応答したモデル fallback の場合はnull
+        aiModel: varchar("ai_model", { length: 64 }),
+        // 提案時の点数の上限
+        maxTickets: integer("max_tickets").notNull(),
+        horseNumbers: varchar("horse_numbers", { length: 32 }).notNull(),
+        ticketCount: integer("ticket_count").notNull(),
+        // Harville式で求めた的中確率
+        hitProbability: doublePrecision("hit_probability").notNull(),
+        // 同じ頭数で最も的中確率が高いBoxの的中確率
+        bestHitProbability: doublePrecision("best_hit_probability").notNull(),
+        // 点数の上限内で最も的中確率が高いBox AIの選択と比べるための基準
+        baselineHorseNumbers: varchar("baseline_horse_numbers", { length: 32 }).notNull(),
+        baselineHitProbability: doublePrecision("baseline_hit_probability").notNull(),
+        reason: text("reason").notNull(),
+        caution: text("caution"),
+    },
+    (table) => [
+        index("idx_box_proposal_race_date").on(table.raceDate),
+        index("idx_box_proposal_race").on(table.raceId),
+    ],
+);
+
 export type RaceInfoRecord = typeof raceInfoTable.$inferInsert;
 export type HorseRecord = typeof horseTable.$inferInsert;
 export type JockeyRecord = typeof jockeyTable.$inferInsert;
@@ -205,12 +249,13 @@ export type PayoffRecord = typeof payoffTable.$inferInsert;
 export type FeatureRecord = typeof featureTable.$inferInsert;
 export type PredictionModelRecord = typeof predictionModelTable.$inferSelect;
 export type PredictionRecord = typeof predictionTable.$inferInsert;
+export type BoxProposalRecord = typeof boxProposalTable.$inferInsert;
 
 /**
  * スクレイピング結果の全テーブル名 外部キーの依存が浅い順
  *
- * 予測モデルと予測(prediction_model_tbl, prediction_tbl)は含めない
- * 予測は取得時のオッズを残した記録で 再スクレイピングでは復元できないため --rebuild-all-tables の対象にしない
+ * 予測モデルと予測とBoxの提案(prediction_model_tbl, prediction_tbl, box_proposal_tbl)は含めない
+ * 予測と提案は取得時のオッズを残した記録で 再スクレイピングでは復元できないため --rebuild-all-tables の対象にしない
  */
 export const ALL_TABLE_NAMES = [
     "race_info_tbl",

@@ -9,7 +9,7 @@ import { sql } from "drizzle-orm";
 
 import { SkylarkCrud } from "../src/db/crud.ts";
 import { PredictionRepository } from "../src/db/prediction-repository.ts";
-import type { PredictionRecord } from "../src/db/schema.ts";
+import type { BoxProposalRecord, PredictionRecord } from "../src/db/schema.ts";
 import { payoutKey } from "../src/predict/evaluation.ts";
 import { createRecordingLogger } from "./mock-fetch.ts";
 import { createTestDatabase, resultRecord, type TestDatabase } from "./test-database.ts";
@@ -230,5 +230,123 @@ describe("predictions", () => {
 
         expect(await repository.listPredictionsWithResults("2026-10-18")).toHaveLength(1);
         expect((await repository.getLatestModel("jra"))?.id).toBe(modelId);
+    });
+});
+
+function boxProposal(overrides: Partial<BoxProposalRecord> = {}): BoxProposalRecord {
+    return {
+        modelId: 1,
+        raceId: 202605040701,
+        capturedAt: new Date("2026-10-18T05:00:00Z"),
+        raceDate: "2026-10-18",
+        raceName: "テストS",
+        source: "ai",
+        aiModel: "claude-opus-5-5",
+        maxTickets: 60,
+        horseNumbers: "1-2-3-4",
+        ticketCount: 24,
+        hitProbability: 0.31,
+        bestHitProbability: 0.31,
+        baselineHorseNumbers: "1-2-3-4-5",
+        baselineHitProbability: 0.44,
+        reason: "上位4頭",
+        caution: null,
+        ...overrides,
+    };
+}
+
+describe("box proposals", () => {
+    test("returns only the latest proposal of each race, joined with the result and the trifecta payoff", async () => {
+        const modelId = await insertModel();
+        await seedRace(202605040701, "2026-10-18");
+        await crud.insertRaceResults([
+            resultRecord(202605040701, 3, { horseId: 1, orderOfFinish: 1 }),
+            resultRecord(202605040701, 1, { horseId: 2, orderOfFinish: 2 }),
+            resultRecord(202605040701, 2, { horseId: 3, orderOfFinish: 3 }),
+        ]);
+        await crud.insertPayoffs([
+            // 単勝と三連複は三連単として数えない
+            { raceId: 202605040701, ticketType: 0, horseNumbers: "3", payoff: 350, popularity: 2 },
+            { raceId: 202605040701, ticketType: 7, horseNumbers: "1-2-3", payoff: 2400, popularity: 5 },
+            { raceId: 202605040701, ticketType: 8, horseNumbers: "3->1->2", payoff: 15230, popularity: 20 },
+        ]);
+        await repository.insertBoxProposal(boxProposal({ modelId, horseNumbers: "1-2-5-6", ticketCount: 24 }));
+        await repository.insertBoxProposal(boxProposal({ modelId, horseNumbers: "1-2-3-4", ticketCount: 24 }));
+        // 結果がまだ無いレース
+        await repository.insertBoxProposal(
+            boxProposal({ modelId, raceId: 202605040702, source: "fallback", aiModel: null, caution: "注意" }),
+        );
+
+        const rows = await repository.listBoxProposalsWithResults("2026-10-18");
+
+        expect(rows.map((row) => [row.raceId, row.horseNumbers])).toEqual([
+            [202605040701, [1, 2, 3, 4]],
+            [202605040702, [1, 2, 3, 4]],
+        ]);
+        expect(rows[0]).toMatchObject({
+            modelId,
+            source: "ai",
+            aiModel: "claude-opus-5-5",
+            ticketCount: 24,
+            hitProbability: 0.31,
+            baselineHorseNumbers: [1, 2, 3, 4, 5],
+            baselineHitProbability: 0.44,
+            hasResult: true,
+            winningTickets: [{ horseNumbers: [3, 1, 2], payoff: 15230 }],
+        });
+        expect(rows[1]).toMatchObject({
+            source: "fallback",
+            aiModel: null,
+            caution: "注意",
+            hasResult: false,
+            winningTickets: [],
+        });
+    });
+
+    test("returns every winning combination of a dead heat", async () => {
+        const modelId = await insertModel();
+        await seedRace(202605040701, "2026-10-18");
+        await crud.insertRaceResults([resultRecord(202605040701, 1, { horseId: 1, orderOfFinish: 1 })]);
+        await crud.insertPayoffs([
+            { raceId: 202605040701, ticketType: 8, horseNumbers: "1->2->3", payoff: 5000, popularity: 9 },
+            { raceId: 202605040701, ticketType: 8, horseNumbers: "1->3->2", payoff: 5100, popularity: 10 },
+        ]);
+        await repository.insertBoxProposal(boxProposal({ modelId }));
+
+        const [row] = await repository.listBoxProposalsWithResults("2026-10-18");
+
+        expect(row?.winningTickets.map((ticket) => ticket.payoff).sort()).toEqual([5000, 5100]);
+    });
+
+    test("keeps a race with imported results but no trifecta payoff, such as a cancelled race", async () => {
+        const modelId = await insertModel();
+        await seedRace(202605040701, "2026-10-18");
+        await crud.insertRaceResults([resultRecord(202605040701, 1, { horseId: 1, orderOfFinish: null })]);
+        await repository.insertBoxProposal(boxProposal({ modelId }));
+
+        const [row] = await repository.listBoxProposalsWithResults("2026-10-18");
+
+        expect(row).toMatchObject({ hasResult: true, winningTickets: [] });
+    });
+
+    test("ignores other dates, and skips a row whose horse numbers cannot be read", async () => {
+        const modelId = await insertModel();
+        expect(await repository.listBoxProposalsWithResults("2026-10-18")).toEqual([]);
+        await repository.insertBoxProposal(boxProposal({ modelId, raceDate: "2026-10-11" }));
+        await repository.insertBoxProposal(boxProposal({ modelId, raceId: 202605040703, horseNumbers: "1-x-3" }));
+        await repository.insertBoxProposal(boxProposal({ modelId, raceId: 202605040704 }));
+
+        const rows = await repository.listBoxProposalsWithResults("2026-10-18");
+
+        expect(rows.map((row) => row.raceId)).toEqual([202605040704]);
+    });
+
+    test("is not removed by truncateAllTables, because the proposal cannot be reproduced", async () => {
+        const modelId = await insertModel();
+        await repository.insertBoxProposal(boxProposal({ modelId }));
+
+        await crud.truncateAllTables();
+
+        expect(await repository.listBoxProposalsWithResults("2026-10-18")).toHaveLength(1);
     });
 });

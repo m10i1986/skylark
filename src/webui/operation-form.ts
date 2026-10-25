@@ -12,8 +12,10 @@ import {
     DEFAULT_HISTORY_SINCE,
     DEFAULT_PERIOD_OF_MONTHS,
     DEFAULT_RACE_LIST_FILE,
+    MAX_AI_BOX_RACES,
     parseCliArguments,
 } from "../cli-args.ts";
+import { DEFAULT_BOX_MAX_TICKETS } from "../predict/trifecta.ts";
 import { DEFAULT_VALUE_CRITERIA } from "../predict/value.ts";
 import {
     FLAG_FIELDS,
@@ -43,6 +45,7 @@ const PASS_THROUGH_OPTIONS: ReadonlyArray<{ field: TextField; option: string }> 
     { field: "minPopularity", option: "--min-popularity" },
     { field: "maxRank", option: "--max-rank" },
     { field: "minEv", option: "--min-ev" },
+    { field: "boxMaxTickets", option: "--box-max-tickets" },
 ];
 
 // 実行する順(operations.ts の実行順と同じ)
@@ -54,6 +57,7 @@ const ACTIONS: ReadonlyArray<{ field: FlagField; option: string; label: string }
     { field: "feature", option: "--feature", label: "特徴量の計算" },
     { field: "train", option: "--train", label: "学習" },
     { field: "predict", option: "--predict", label: "予測と抽出" },
+    { field: "aiBox", option: "--ai-box", label: "3連単Boxの提案(AI)" },
     { field: "report", option: "--report", label: "結果の突き合わせ" },
 ];
 
@@ -83,6 +87,7 @@ export function buildOperationDefaults(tempDirectory: string): OperationDefaults
         minPopularity: DEFAULT_VALUE_CRITERIA.minPopularity,
         maxRank: DEFAULT_VALUE_CRITERIA.maxModelRank,
         minExpectedValue: DEFAULT_VALUE_CRITERIA.minExpectedValue,
+        boxMaxTickets: DEFAULT_BOX_MAX_TICKETS,
         tempDirectory,
     };
 }
@@ -199,12 +204,17 @@ export function parseOperationForm(values: OperationFormValues): ParseOperationR
         const invalid = raceIds.find((raceId) => !RACE_ID_PATTERN.test(raceId));
         if (invalid != null) {
             errors.push(`レース ID は数字だけで指定してください: ${invalid.slice(0, 20)}`);
-        } else if (raceIds.length > 0 && !isOn("scraping") && !isOn("predict")) {
-            errors.push("レース ID は、ダウンロード(-S)か予測(-P)と一緒に指定してください。");
+        } else if (raceIds.length > 0 && !isOn("scraping") && !isOn("predict") && !isOn("aiBox")) {
+            errors.push("レース ID は、ダウンロード(-S)か予測(-P)かBoxの提案(-B)と一緒に指定してください。");
         } else if (raceIds.length > 0) {
             // 「--」の後ろは すべて位置引数として扱われる(「-」で始まる値がオプションに解釈されない)
             argv.push("--", ...raceIds);
         }
+    }
+
+    // Boxの提案はレースごとにClaude APIを呼ぶため レースIDの指定を必須にして 件数を絞る
+    if (isOn("aiBox") && (raceIds.length < 1 || raceIds.length > MAX_AI_BOX_RACES)) {
+        errors.push(`3連単Boxの提案(-B)には、レース ID を 1 〜 ${MAX_AI_BOX_RACES} 件指定してください。`);
     }
 
     if (errors.length > 0) {

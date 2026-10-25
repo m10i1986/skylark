@@ -331,6 +331,9 @@ describe("predictToday", () => {
         expect(result).toMatchObject({ date: TODAY, modelId, skippedRaceIds: [jraRaceId(2)] });
         expect(result.predictions[0]).toMatchObject({ raceName: "東京1R 本日のS", postTime: "15:20" });
         expect(result.predictions.map((prediction) => prediction.raceId)).toEqual([jraRaceId(1)]);
+        // 予測できたレースの出馬表だけを返す(発売前で読み飛ばしたレースは含まない)
+        expect([...result.informations.keys()]).toEqual([jraRaceId(1)]);
+        expect(result.informations.get(jraRaceId(1))?.horses).toHaveLength(longShotHorses.length);
         expect(
             result.predictions[0]?.runners.filter((entry) => entry.isValuePick).map((entry) => entry.horseNumber),
         ).toEqual([6]);
@@ -440,7 +443,7 @@ describe("reports", () => {
             throw new Error("no prediction");
         }
         const text = formatPredictions(
-            { date: TODAY, modelId: 1, predictions: [prediction], skippedRaceIds: [] },
+            { date: TODAY, modelId: 1, predictions: [prediction], skippedRaceIds: [], informations: new Map() },
             DEFAULT_VALUE_CRITERIA,
             false,
         );
@@ -453,7 +456,7 @@ describe("reports", () => {
 
     test("says so when no horse meets the conditions", () => {
         const text = formatPredictions(
-            { date: TODAY, modelId: 1, predictions: [], skippedRaceIds: [5] },
+            { date: TODAY, modelId: 1, predictions: [], skippedRaceIds: [5], informations: new Map() },
             DEFAULT_VALUE_CRITERIA,
             false,
         );

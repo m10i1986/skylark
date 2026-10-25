@@ -197,6 +197,8 @@ export type PredictTodayResult = {
     predictions: RacePrediction[];
     // オッズが無い(発売前)などで予測できなかったレースID
     skippedRaceIds: number[];
+    // 予測したレースの出馬表(レースIDから引く) 予測の後に出馬表を取り直さずに済むよう残す
+    informations: ReadonlyMap<number, RaceInformation>;
 };
 
 /**
@@ -255,6 +257,7 @@ export async function predictToday(
     // 出馬表サイトへの負荷を抑えるため 同時に取得するレース数を絞る
     const predictions: RacePrediction[] = [];
     const skippedRaceIds: number[] = [];
+    const informations = new Map<number, RaceInformation>();
     let nextIndex = 0;
     const worker = async (): Promise<void> => {
         while (nextIndex < targets.length) {
@@ -287,6 +290,7 @@ export async function predictToday(
                     skippedRaceIds.push(target.raceId);
                 } else {
                     predictions.push(prediction);
+                    informations.set(target.raceId, information);
                 }
             } catch (error) {
                 logger.error(`failed to predict race ${target.raceId}`, error);
@@ -300,7 +304,7 @@ export async function predictToday(
     await repository.insertPredictions(
         predictions.flatMap((prediction) => toPredictionRecords(prediction, modelRecord.id)),
     );
-    return { date: today, modelId: modelRecord.id, predictions, skippedRaceIds };
+    return { date: today, modelId: modelRecord.id, predictions, skippedRaceIds, informations };
 }
 
 /**

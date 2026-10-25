@@ -16,8 +16,15 @@ import { type Database, SkylarkCrud } from "./db/crud.ts";
 import { PredictionRepository } from "./db/prediction-repository.ts";
 import { buildFeatures, defaultFeatureConcurrency } from "./feature.ts";
 import type { Logger } from "./logger.ts";
-import { formatLocalDate, predictToday } from "./predict/live.ts";
-import { formatPredictions, formatTrainingReport, formatVerification } from "./predict/report.ts";
+import { type BoxProposal, type BoxSelector, proposeBox, toBoxProposalRecord } from "./predict/ai-box.ts";
+import { formatLocalDate, type PredictTodayResult, predictToday } from "./predict/live.ts";
+import {
+    formatBoxProposals,
+    formatBoxVerification,
+    formatPredictions,
+    formatTrainingReport,
+    formatVerification,
+} from "./predict/report.ts";
 import { defaultTrainOptions, trainPredictionModel } from "./predict/train.ts";
 import { downloadRaces, login } from "./scraper/downloader.ts";
 import { fetchEucJpHtml, HttpStatusError, readResponseText, requestWithTimeout } from "./scraper/http.ts";
@@ -52,6 +59,8 @@ export type OperationDependencies = {
     acquireNetkeibaClient?: (env: Environment) => Promise<NetkeibaClientLease>;
     // 指定すると特徴量の進捗を標準エラー出力ではなくここへ1行ずつ渡す
     writeProgressLine?: (line: string) => void;
+    // 省略時は環境変数の設定でClaude APIを呼ぶ(-B のときだけ呼ぶ)
+    createBoxSelector?: (env: Environment) => Promise<BoxSelector> | BoxSelector;
 };
 
 /**
@@ -87,6 +96,19 @@ export async function acquireNetkeibaClientFromEnvironment(env: Environment): Pr
             chromiumExecutablePath == null || chromiumExecutablePath === "" ? undefined : chromiumExecutablePath,
     });
     return { client, release: () => client.close() };
+}
+
+/**
+ * 環境変数の設定でClaude APIを呼ぶ選定処理を作る
+ *
+ * SDKは重いため この時点で読み込む
+ *
+ * @param env - 環境変数
+ * @returns 3連単Boxの選定を依頼する処理
+ */
+export async function createBoxSelectorFromEnvironment(env: Environment): Promise<BoxSelector> {
+    const { createAnthropicBoxSelectorFromEnvironment } = await import("./predict/anthropic-box.ts");
+    return createAnthropicBoxSelectorFromEnvironment(env);
 }
 
 // エラー応答の本文を一覧として読まないよう 2xx以外は例外にする
@@ -133,12 +155,12 @@ async function trainAndSave(
     logger.info("End train");
 }
 
-// 当日開催の中央競馬を予測して表示する 出馬表はブラウザで取得するため 必要になった時点で借りる
-async function predictAndPrint(
+// 当日開催の中央競馬を予測して保存する 出馬表はブラウザで取得するため 必要になった時点で借りる
+async function predictRaces(
     repository: PredictionRepository,
     args: CliArguments,
     dependencies: OperationDependencies,
-): Promise<void> {
+): Promise<PredictTodayResult> {
     const { logger } = dependencies;
     const raceIds = args.raceIds.map((text) => {
         if (!/^\d{1,18}$/.test(text)) {
@@ -154,17 +176,68 @@ async function predictAndPrint(
             { client: lease.client, repository, logger, now: () => new Date() },
             { criteria: args.valueCriteria, historySince: args.historySince, raceIds },
         );
-        dependencies.output(formatPredictions(result, args.valueCriteria, args.isVerbose));
         logger.info("End predict");
+        return result;
     } finally {
         await lease.release();
     }
 }
 
+// 予測したレースごとに 3連単Boxを提案させて保存し 報告する
+// 認証や依頼の誤りなど どのレースでも失敗する場合は 提案できた分を報告してから失敗にする
+async function proposeBoxesAndPrint(
+    repository: PredictionRepository,
+    prediction: PredictTodayResult,
+    selector: BoxSelector,
+    args: CliArguments,
+    dependencies: OperationDependencies,
+): Promise<void> {
+    const { logger } = dependencies;
+    logger.info("Start AI box");
+    const proposals: BoxProposal[] = [];
+    const skippedRaceIds = [...prediction.skippedRaceIds];
+    const printReport = (): void => {
+        dependencies.output(
+            formatBoxProposals({ date: prediction.date, proposals, skippedRaceIds, maxTickets: args.boxMaxTickets }),
+        );
+    };
+    try {
+        for (const racePrediction of prediction.predictions) {
+            const information = prediction.informations.get(racePrediction.raceId);
+            const proposal =
+                information == null
+                    ? null
+                    : await proposeBox(
+                          { prediction: racePrediction, information, maxTickets: args.boxMaxTickets },
+                          selector,
+                          logger,
+                      );
+            if (proposal == null) {
+                logger.warning(`race ${racePrediction.raceId}: no box can be made, skipped`);
+                skippedRaceIds.push(racePrediction.raceId);
+                continue;
+            }
+            await repository.insertBoxProposal(toBoxProposalRecord(proposal, prediction.modelId));
+            proposals.push(proposal);
+            logger.info(
+                `race ${proposal.raceId}: box ${proposal.horseNumbers.join("-")} (${proposal.source}, ${proposal.ticketCount} tickets)`,
+            );
+        }
+    } catch (error) {
+        // 途中で失敗しても 保存した提案は報告する
+        if (proposals.length > 0) {
+            printReport();
+        }
+        throw error;
+    }
+    printReport();
+    logger.info("End AI box");
+}
+
 /**
  * 引数で指定された処理を順に実行する
  *
- * 実行順は テーブルの削除 → 一覧の更新(-U) → ダウンロード(-S) → 特徴量(-F) → 学習(-T) → 予測(-P) → 突き合わせ(--report)
+ * 実行順は テーブルの削除 → 一覧の更新(-U) → ダウンロード(-S) → 特徴量(-F) → 学習(-T) → 予測(-P) → Boxの提案(-B) → 突き合わせ(--report)
  *
  * @param args - 実行する処理と設定
  * @param dependencies - ログと報告の書き出し先 DBとブラウザの取得方法
@@ -244,13 +317,28 @@ export async function runOperations(args: CliArguments, dependencies: OperationD
             await trainAndSave(predictionRepository, args, dependencies);
         }
 
-        if (args.isPredict) {
-            await predictAndPrint(predictionRepository, args, dependencies);
+        if (args.isPredict || args.isAiBox) {
+            // 設定の誤りは 出馬表の取得より前に知らせる
+            const selector = args.isAiBox
+                ? await (dependencies.createBoxSelector ?? createBoxSelectorFromEnvironment)(env)
+                : null;
+            const result = await predictRaces(predictionRepository, args, dependencies);
+            if (args.isPredict) {
+                dependencies.output(formatPredictions(result, args.valueCriteria, args.isVerbose));
+            }
+            if (selector != null) {
+                await proposeBoxesAndPrint(predictionRepository, result, selector, args, dependencies);
+            }
         }
 
         if (args.isReport) {
             const date = args.date ?? formatLocalDate(new Date());
             dependencies.output(formatVerification(date, await predictionRepository.listPredictionsWithResults(date)));
+            // 提案が無い日は何も出さない
+            const boxReport = formatBoxVerification(date, await predictionRepository.listBoxProposalsWithResults(date));
+            if (boxReport !== "") {
+                dependencies.output(boxReport);
+            }
         }
     } finally {
         await database.close();

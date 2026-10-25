@@ -15,6 +15,13 @@
       "when": 1792280711350,
       "tag": "0001_add_prediction_tables",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1792924899465,
+      "tag": "0002_add_box_proposal_table",
+      "breakpoints": true
     }
   ]
 }

@@ -141,7 +141,7 @@ describe("GET /operations", () => {
         const shortOptions = [...USAGE.matchAll(/^\s+(-[A-Za-z]+),/gm)]
             .map((match) => match[1] ?? "")
             .filter((name) => name !== "-h");
-        expect(shortOptions).toEqual(["-Rf", "-U", "-S", "-F", "-T", "-P"]);
+        expect(shortOptions).toEqual(["-Rf", "-U", "-S", "-F", "-T", "-P", "-B"]);
         for (const short of shortOptions) {
             expect(html).toContain(`(${short}, `);
         }
@@ -202,6 +202,29 @@ describe("POST /operations", () => {
             raceIds: ["202605040701", "202605040702"],
             valueCriteria: { minOdds: 20 },
         });
+    });
+
+    test("starts an AI box job with the ticket limit of the form", async () => {
+        const response = await postOperations(harness, {
+            aiBox: FLAG_ON,
+            boxMaxTickets: "24",
+            raceIds: "202605040711",
+        });
+        jobIdOf(response);
+        await harness.runner.whenIdle();
+        expect(harness.executed[0]).toMatchObject({
+            isAiBox: true,
+            boxMaxTickets: 24,
+            raceIds: ["202605040711"],
+        });
+    });
+
+    test("refuses an AI box without race ids and starts nothing, because every race calls the paid API", async () => {
+        const response = await postOperations(harness, { aiBox: FLAG_ON });
+        expect(response.status).toBe(400);
+        expect(await response.text()).toContain("3連単Boxの提案(-B)には、レース ID を 1 〜 12 件指定してください。");
+        await harness.runner.whenIdle();
+        expect(harness.executed).toHaveLength(0);
     });
 
     test("fixes the HTML cache directory on the server", async () => {

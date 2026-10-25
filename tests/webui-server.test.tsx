@@ -309,6 +309,16 @@ function predictFormOf(html: string): string | null {
     return /<form[^>]*action="\/operations"[^>]*>.*?<\/form>/s.exec(html)?.[0] ?? null;
 }
 
+// 隠し項目に指定した処理の項目を持つ「/operations」へのフォーム
+function operationFormWith(html: string, field: string): string | null {
+    for (const match of html.matchAll(/<form[^>]*action="\/operations"[^>]*>.*?<\/form>/gs)) {
+        if (match[0].includes(`name="${field}"`)) {
+            return match[0];
+        }
+    }
+    return null;
+}
+
 // フォームの隠し項目の値
 function hiddenFields(form: string): Record<string, string> {
     const fields: Record<string, string> = {};
@@ -339,7 +349,7 @@ describe("GET / predict button", () => {
         expect(form).not.toBeNull();
         expect(form).toContain("このレースを予測");
         expect(form).not.toContain('disabled=""');
-        expect(hiddenFields(form ?? "")).toEqual({ predict: "1", raceIds: "209901010102" });
+        expect(hiddenFields(form ?? "")).toEqual({ predict: "1", verbose: "1", raceIds: "209901010102" });
     });
 
     test("is disabled with a reason when the date is not today", async () => {
@@ -380,8 +390,71 @@ describe("GET / predict button", () => {
         expect(harness.executed).toHaveLength(1);
         expect(harness.executed[0]).toMatchObject({
             isPredict: true,
+            isVerbose: true,
             isScraping: false,
             isFeature: false,
+            isTrain: false,
+            raceIds: ["209901010102"],
+        });
+    });
+});
+
+describe("GET / AI box button", () => {
+    const get = async (target: string = "/"): Promise<string> =>
+        (await harness.app.request(target, { headers: { host: "localhost" } })).text();
+
+    test("is not shown when the operations screen is disabled", async () => {
+        harness = createHarness({ today: "2025-07-06" });
+        const html = await get();
+        expect(html).not.toContain("3連単Box");
+        expect(operationFormWith(html, "aiBox")).toBeNull();
+    });
+
+    test("offers the AI box for the displayed race, with a note about the cost", async () => {
+        harness = createHarness({ today: "2025-07-06", hasOperations: true });
+        const form = operationFormWith(await get("/?date=0&race=1"), "aiBox");
+        expect(form).not.toBeNull();
+        expect(form).toContain("このレースの3連単Boxを AI に提案させる");
+        expect(form).toContain("料金がかかります");
+        expect(form).not.toContain('disabled=""');
+        expect(hiddenFields(form ?? "")).toEqual({ aiBox: "1", raceIds: "209901010102" });
+    });
+
+    test("shows every runner for the prediction button (verbose), and does not start the AI box from it", async () => {
+        harness = createHarness({ today: "2025-07-06", hasOperations: true });
+        const html = await get("/?date=0&race=1");
+        expect(hiddenFields(predictFormOf(html) ?? "")).toEqual({
+            predict: "1",
+            verbose: "1",
+            raceIds: "209901010102",
+        });
+    });
+
+    test("is disabled with the reason, and without the cost note, when the race cannot be predicted", async () => {
+        harness = createHarness({ today: "2025-07-01", hasOperations: true });
+        const form = operationFormWith(await get(), "aiBox");
+        expect(form).toContain('disabled=""');
+        expect(form).toContain("予測できるのは当日開催のレースだけです。");
+        expect(form).not.toContain("料金がかかります");
+    });
+
+    test("starts an AI box job for the displayed race only", async () => {
+        harness = createHarness({ today: "2025-07-06", hasOperations: true });
+        const form = operationFormWith(await get("/?date=0&race=1"), "aiBox");
+        const response = await harness.app.request("/operations", {
+            method: "POST",
+            headers: FORM_HEADERS,
+            body: new URLSearchParams(hiddenFields(form ?? "")).toString(),
+        });
+        expect(response.status).toBe(303);
+        expect(response.headers.get("location")).toMatch(/^\/jobs\/[0-9a-f-]{36}$/);
+        await harness.runner.whenIdle();
+        expect(harness.executed).toHaveLength(1);
+        expect(harness.executed[0]).toMatchObject({
+            isAiBox: true,
+            boxMaxTickets: 60,
+            isPredict: false,
+            isScraping: false,
             isTrain: false,
             raceIds: ["209901010102"],
         });

@@ -17,6 +17,7 @@ export const FLAG_FIELDS = [
     "feature",
     "train",
     "predict",
+    "aiBox",
     "report",
     "verbose",
     "debug",
@@ -33,6 +34,7 @@ export const TEXT_FIELDS = [
     "minPopularity",
     "maxRank",
     "minEv",
+    "boxMaxTickets",
 ] as const;
 
 export type FlagField = (typeof FLAG_FIELDS)[number];
@@ -66,6 +68,7 @@ export type OperationDefaults = {
     minPopularity: number;
     maxRank: number;
     minExpectedValue: number;
+    boxMaxTickets: number;
     // HTMLキャッシュの置き場 画面からは変更できない
     tempDirectory: string;
 };

@@ -5,6 +5,7 @@
 
 import { parseArgs } from "node:util";
 
+import { boxTicketCount, DEFAULT_BOX_MAX_TICKETS, MAX_BOX_HORSES, MIN_BOX_HORSES } from "./predict/trifecta.ts";
 import { DEFAULT_VALUE_CRITERIA, type ValueCriteria } from "./predict/value.ts";
 
 /** コマンドライン引数の内容 */
@@ -20,6 +21,7 @@ export type CliArguments = {
     isFeature: boolean;
     isTrain: boolean;
     isPredict: boolean;
+    isAiBox: boolean;
     isReport: boolean;
     isVerbose: boolean;
     isDebug: boolean;
@@ -30,6 +32,8 @@ export type CliArguments = {
     historySince: string;
     // 「勝率が高いのに人気がない馬」の抽出条件
     valueCriteria: ValueCriteria;
+    // 3連単Boxの点数の上限(-B)
+    boxMaxTickets: number;
     raceIds: string[];
 };
 
@@ -45,6 +49,9 @@ export const DEFAULT_RACE_LIST_FILE = "race_list.txt";
 /** 一覧を遡る月数の既定値 */
 export const DEFAULT_PERIOD_OF_MONTHS = 12;
 
+/** 一度に3連単Boxを提案できるレース数の上限 レースごとにClaude APIを呼び 料金がかかるため */
+export const MAX_AI_BOX_RACES = 12;
+
 /** コマンドライン引数が不正であることを表す */
 export class CliUsageError extends Error {
     constructor(message: string) {
@@ -56,15 +63,17 @@ export class CliUsageError extends Error {
 /** ヘルプ表示用の文章 */
 export const USAGE = `usage: cli.ts [-h] [--temp TEMP] [--race-list-file RACE_LIST_FILE]
               [--period-of-months PERIOD_OF_MONTHS] [--rebuild-all-tables]
-              [-Rf] [-U] [-S] [-F] [-T] [-P] [--report] [--date DATE]
+              [-Rf] [-U] [-S] [-F] [-T] [-P] [-B] [--report] [--date DATE]
               [--history-since DATE] [--min-odds N] [--min-popularity N]
-              [--max-rank N] [--min-ev N] [--verbose] [--debug]
+              [--max-rank N] [--min-ev N] [--box-max-tickets N]
+              [--verbose] [--debug]
               [race_id ...]
 
 This script is a program that netkeiba.com scraping.
 
 positional arguments:
-  race_id               Race ID (with -S: races to download, with -P: races to predict)
+  race_id               Race ID (with -S: races to download, with -P/-B: races to predict;
+                        -B requires at least one race_id and accepts up to 12)
 
 options:
   -h, --help            show this help message and exit
@@ -83,6 +92,8 @@ options:
   -T, --train           train the win probability model and save it to the DB(default: False)
   -P, --predict         predict today's central races and extract horses whose
                         win probability is high but popularity is low(default: False)
+  -B, --ai-box          ask Claude to pick a trifecta box for the given races (predicts them first;
+                        needs ANTHROPIC_API_KEY, billed per race)(default: False)
   --report              compare saved predictions with the results of --date(default: False)
   --date DATE           date for --report, YYYY-MM-DD(default: today)
   --history-since DATE  first date of the past results used by -T and -P(default: 2025-01-01)
@@ -90,6 +101,7 @@ options:
   --min-popularity N    pick: popularity rank N or lower, a larger number is less popular(default: 4)
   --max-rank N          pick: model win probability rank N or higher(default: 5)
   --min-ev N            pick: expected value (win probability x odds) at least N, 0 disables(default: 1)
+  --box-max-tickets N   -B: upper limit of tickets of the box, 6 to 336 (3 to 8 horses)(default: 60)
   --verbose             show every runner of every race with -P(default: False)
   --debug               Debug mode(default: False)
 `;
@@ -129,6 +141,12 @@ export function parseCliArguments(argv: readonly string[]): CliArguments {
         minExpectedValue: parseNumberOption("--min-ev", values["min-ev"], 0),
     };
     const date = values.date == null ? null : parseDateOption("--date", values.date);
+    const boxMaxTickets = parseBoxMaxTickets(values["box-max-tickets"]);
+    if (values["ai-box"] && (positionals.length < 1 || positionals.length > MAX_AI_BOX_RACES)) {
+        throw new CliUsageError(
+            `argument -B: specify 1 to ${MAX_AI_BOX_RACES} race ids (each race calls the Claude API)`,
+        );
+    }
 
     return {
         temp: values.temp,
@@ -141,6 +159,7 @@ export function parseCliArguments(argv: readonly string[]): CliArguments {
         isFeature: values.feature,
         isTrain: values.train,
         isPredict: values.predict,
+        isAiBox: values["ai-box"],
         isReport: values.report,
         isVerbose: values.verbose,
         isDebug: values.debug,
@@ -148,8 +167,21 @@ export function parseCliArguments(argv: readonly string[]): CliArguments {
         date,
         historySince: parseDateOption("--history-since", values["history-since"]),
         valueCriteria,
+        boxMaxTickets,
         raceIds: positionals,
     };
+}
+
+// 3頭(6点)から8頭(336点)までの点数
+function parseBoxMaxTickets(text: string): number {
+    const minimum = boxTicketCount(MIN_BOX_HORSES);
+    const maximum = boxTicketCount(MAX_BOX_HORSES);
+    if (!/^\d{1,4}$/.test(text.trim()) || Number(text.trim()) < minimum || Number(text.trim()) > maximum) {
+        throw new CliUsageError(
+            `argument --box-max-tickets: must be an integer from ${minimum} to ${maximum}: '${text}'`,
+        );
+    }
+    return Number(text.trim());
 }
 
 function parseNumberOption(name: string, text: string, minimum: number): number {
@@ -193,6 +225,7 @@ function parseWithSchema(args: string[]) {
             feature: { type: "boolean", short: "F", default: false },
             train: { type: "boolean", short: "T", default: false },
             predict: { type: "boolean", short: "P", default: false },
+            "ai-box": { type: "boolean", short: "B", default: false },
             report: { type: "boolean", default: false },
             verbose: { type: "boolean", default: false },
             date: { type: "string" },
@@ -201,6 +234,7 @@ function parseWithSchema(args: string[]) {
             "min-popularity": { type: "string", default: String(DEFAULT_VALUE_CRITERIA.minPopularity) },
             "max-rank": { type: "string", default: String(DEFAULT_VALUE_CRITERIA.maxModelRank) },
             "min-ev": { type: "string", default: String(DEFAULT_VALUE_CRITERIA.minExpectedValue) },
+            "box-max-tickets": { type: "string", default: String(DEFAULT_BOX_MAX_TICKETS) },
             debug: { type: "boolean", default: false },
             help: { type: "boolean", short: "h", default: false },
         },

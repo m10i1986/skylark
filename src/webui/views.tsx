@@ -247,17 +247,34 @@ function RaceDetailView({ detail, heading }: { detail: RaceDetail; heading: stri
     );
 }
 
-// 表示中のレースだけを予測する 操作の画面と同じ送信先へ「予測と抽出」とレースIDを渡し 他の設定は既定値にする
-function PredictForm({ detail }: { detail: RaceDetail }): ReactNode {
+// 表示中のレースだけを対象に 操作の画面と同じ送信先へ 処理の種類とレースIDを渡し 他の設定は既定値にする
+function RaceActionForm({
+    detail,
+    flag,
+    label,
+    note,
+    isVerbose = false,
+}: {
+    detail: RaceDetail;
+    flag: "predict" | "aiBox";
+    label: string;
+    // ボタンの横に出す補足(料金など)
+    note?: string;
+    // 報告に全出走馬を出す(--verbose)
+    isVerbose?: boolean;
+}): ReactNode {
     return (
         <form method="post" action="/operations" className="flex flex-wrap items-center gap-3">
-            <input type="hidden" name="predict" value={FLAG_ON} />
+            <input type="hidden" name={flag} value={FLAG_ON} />
+            {isVerbose && <input type="hidden" name="verbose" value={FLAG_ON} />}
             <input type="hidden" name="raceIds" value={String(detail.raceId)} />
             <Button type="submit" disabled={detail.unpredictableReason != null}>
-                このレースを予測
+                {label}
             </Button>
-            {detail.unpredictableReason != null && (
+            {detail.unpredictableReason != null ? (
                 <span className="text-sm text-muted-foreground">{detail.unpredictableReason}</span>
+            ) : (
+                note != null && <span className="text-sm text-muted-foreground">{note}</span>
             )}
         </form>
     );
@@ -326,7 +343,18 @@ export function IndexPage(props: IndexPageProps): ReactNode {
                         )}
                     </form>
 
-                    {isOperationsEnabled && <PredictForm detail={detail} />}
+                    {isOperationsEnabled && (
+                        // 1レースだけの予測は 抽出された馬がいないと何も出ないため 全出走馬を表示する
+                        <RaceActionForm detail={detail} flag="predict" label="このレースを予測" isVerbose />
+                    )}
+                    {isOperationsEnabled && (
+                        <RaceActionForm
+                            detail={detail}
+                            flag="aiBox"
+                            label="このレースの3連単Boxを AI に提案させる"
+                            note="Claude API を 1 回呼びます(料金がかかります)。予測も行います。"
+                        />
+                    )}
                 </>
             )}
         </main>

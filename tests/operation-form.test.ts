@@ -173,6 +173,52 @@ describe("parseOperationForm: period of months", () => {
     });
 });
 
+describe("parseOperationForm: AI box", () => {
+    test("builds the same arguments as the command line for -B", () => {
+        const operation = parsed({ aiBox: ON, boxMaxTickets: "24", raceIds: "202605040711 202605040712" });
+        expect(operation.args).toEqual(
+            parseCliArguments(["-B", "--box-max-tickets=24", "--", "202605040711", "202605040712"]),
+        );
+        expect(operation.args).toMatchObject({ isAiBox: true, boxMaxTickets: 24, isPredict: false });
+        expect(operation.commandLine).toBe("--ai-box --box-max-tickets=24 -- 202605040711 202605040712");
+    });
+
+    test("runs after the prediction and before the report, in the same order as the command line", () => {
+        const operation = parsed({ report: ON, aiBox: ON, predict: ON, raceIds: "202605040711" });
+        expect(operation.title).toBe("予測と抽出 → 3連単Boxの提案(AI) → 結果の突き合わせ");
+        expect(operation.commandLine).toBe("--predict --ai-box --report -- 202605040711");
+    });
+
+    test("uses the default ticket limit when the field is empty", () => {
+        expect(parsed({ aiBox: ON, raceIds: "202605040711" }).args.boxMaxTickets).toBe(60);
+    });
+
+    test("needs race ids, because every race calls the paid API", () => {
+        expect(errorsOf({ aiBox: ON })).toEqual(["3連単Boxの提案(-B)には、レース ID を 1 〜 12 件指定してください。"]);
+        expect(errorsOf({ aiBox: ON, raceIds: "  " })).toHaveLength(1);
+    });
+
+    test("accepts up to the limit of races and rejects more", () => {
+        const ids = (count: number): string =>
+            Array.from({ length: count }, (_, index) => String(202605040701 + index)).join(" ");
+        expect(parsed({ aiBox: ON, raceIds: ids(12) }).args.raceIds).toHaveLength(12);
+        expect(errorsOf({ aiBox: ON, raceIds: ids(13) })).toEqual([
+            "3連単Boxの提案(-B)には、レース ID を 1 〜 12 件指定してください。",
+        ]);
+    });
+
+    test.each(["5", "337", "abc", "2.5", "-24"])("rejects the ticket limit %j", (value) => {
+        const errors = errorsOf({ aiBox: ON, boxMaxTickets: value, raceIds: "202605040711" });
+        expect(errors).toHaveLength(1);
+        expect(errors[0]).toContain("--box-max-tickets");
+    });
+
+    test("never lets a ticket limit become an option", () => {
+        const errors = errorsOf({ aiBox: ON, boxMaxTickets: "--debug", raceIds: "202605040711" });
+        expect(errors[0]).toContain("--box-max-tickets");
+    });
+});
+
 describe("parseOperationForm: race ids", () => {
     test("splits ids by spaces, line breaks and commas", () => {
         const operation = parsed({ scraping: ON, raceIds: "202501010101, 202501010102\n202501010103\t202501010104" });
@@ -195,7 +241,7 @@ describe("parseOperationForm: race ids", () => {
 
     test("rejects ids when nothing uses them", () => {
         const errors = errorsOf({ feature: ON, raceIds: "202501010101" });
-        expect(errors).toEqual(["レース ID は、ダウンロード(-S)か予測(-P)と一緒に指定してください。"]);
+        expect(errors).toEqual(["レース ID は、ダウンロード(-S)か予測(-P)かBoxの提案(-B)と一緒に指定してください。"]);
     });
 
     test("limits the number of ids", () => {
@@ -277,6 +323,7 @@ describe("buildOperationDefaults", () => {
             minPopularity: cli.valueCriteria.minPopularity,
             maxRank: cli.valueCriteria.maxModelRank,
             minExpectedValue: cli.valueCriteria.minExpectedValue,
+            boxMaxTickets: cli.boxMaxTickets,
             tempDirectory: "./temp",
         });
     });

@@ -5,7 +5,7 @@
 
 import { describe, expect, test } from "bun:test";
 
-import { CliUsageError, DEFAULT_HISTORY_SINCE, parseCliArguments } from "../src/cli-args.ts";
+import { CliUsageError, DEFAULT_HISTORY_SINCE, MAX_AI_BOX_RACES, parseCliArguments } from "../src/cli-args.ts";
 import { DEFAULT_VALUE_CRITERIA } from "../src/predict/value.ts";
 
 describe("parseCliArguments", () => {
@@ -21,6 +21,7 @@ describe("parseCliArguments", () => {
             isFeature: false,
             isTrain: false,
             isPredict: false,
+            isAiBox: false,
             isReport: false,
             isVerbose: false,
             isDebug: false,
@@ -28,6 +29,7 @@ describe("parseCliArguments", () => {
             date: null,
             historySince: DEFAULT_HISTORY_SINCE,
             valueCriteria: DEFAULT_VALUE_CRITERIA,
+            boxMaxTickets: 60,
             raceIds: [],
         });
     });
@@ -114,5 +116,43 @@ describe("parseCliArguments", () => {
         expect(() => parseCliArguments(["--date", "2026-02-30"])).toThrow(CliUsageError);
         expect(() => parseCliArguments(["--date", "20261018"])).toThrow(CliUsageError);
         expect(() => parseCliArguments(["--history-since", "yesterday"])).toThrow(CliUsageError);
+    });
+
+    describe("the AI box mode (-B)", () => {
+        test("takes the race ids to propose boxes for, in both spellings", () => {
+            expect(parseCliArguments(["-B", "202605040711"])).toMatchObject({
+                isAiBox: true,
+                boxMaxTickets: 60,
+                raceIds: ["202605040711"],
+            });
+            expect(parseCliArguments(["--ai-box", "202605040711"]).isAiBox).toBe(true);
+        });
+
+        test("requires at least one race id, because every race calls the paid API", () => {
+            expect(() => parseCliArguments(["-B"])).toThrow(CliUsageError);
+            expect(() => parseCliArguments(["-P", "-B"])).toThrow(CliUsageError);
+        });
+
+        test("accepts up to the limit of races and rejects more", () => {
+            const ids = (count: number): string[] =>
+                Array.from({ length: count }, (_, index) => String(202605040701 + index));
+            expect(parseCliArguments(["-B", ...ids(MAX_AI_BOX_RACES)]).raceIds).toHaveLength(MAX_AI_BOX_RACES);
+            expect(() => parseCliArguments(["-B", ...ids(MAX_AI_BOX_RACES + 1)])).toThrow(CliUsageError);
+        });
+
+        test("does not limit the race ids of the other modes", () => {
+            const ids = Array.from({ length: 50 }, (_, index) => String(202605040701 + index));
+            expect(parseCliArguments(["-P", ...ids]).raceIds).toHaveLength(50);
+        });
+
+        test("parses the ticket limit between 3 horses (6) and 8 horses (336)", () => {
+            expect(parseCliArguments(["-B", "--box-max-tickets", "24", "1"]).boxMaxTickets).toBe(24);
+            expect(parseCliArguments(["-B", "--box-max-tickets=336", "1"]).boxMaxTickets).toBe(336);
+            expect(parseCliArguments(["-B", "--box-max-tickets=6", "1"]).boxMaxTickets).toBe(6);
+        });
+
+        test.each(["5", "337", "0", "-24", "2.5", "abc", ""])("rejects the ticket limit %p", (value) => {
+            expect(() => parseCliArguments(["-B", `--box-max-tickets=${value}`, "1"])).toThrow(CliUsageError);
+        });
     });
 });
