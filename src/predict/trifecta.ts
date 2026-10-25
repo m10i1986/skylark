@@ -143,6 +143,16 @@ function forEachCombination(poolSize: number, count: number, visit: (indices: re
     extend(0);
 }
 
+type PoolEntry = { horseNumber: number; index: number; probability: number };
+
+// 勝率の高い順(同じなら馬番の小さい順)に 候補の母集団を絞る
+function candidatePool(horseNumbers: readonly number[], probabilities: readonly number[]): PoolEntry[] {
+    return horseNumbers
+        .map((horseNumber, index) => ({ horseNumber, index, probability: probabilities[index] ?? 0 }))
+        .sort((a, b) => b.probability - a.probability || a.horseNumber - b.horseNumber)
+        .slice(0, CANDIDATE_POOL_SIZE);
+}
+
 /** 候補を探す条件 */
 export type CandidateOptions = {
     // 点数の上限
@@ -182,11 +192,7 @@ export function candidateBoxes(
         return [];
     }
 
-    // 勝率の高い順(同じなら馬番の小さい順)に母集団を絞る
-    const pool = horseNumbers
-        .map((horseNumber, index) => ({ horseNumber, index, probability: probabilities[index] ?? 0 }))
-        .sort((a, b) => b.probability - a.probability || a.horseNumber - b.horseNumber)
-        .slice(0, CANDIDATE_POOL_SIZE);
+    const pool = candidatePool(horseNumbers, probabilities);
 
     const candidates: BoxCandidate[] = [];
     for (let horses = minHorses; horses <= Math.min(largest, pool.length); horses++) {
@@ -215,6 +221,71 @@ export function candidateBoxes(
         candidates.push(...kept);
     }
     return candidates;
+}
+
+/** 最良のBoxに入らない馬を入れた場合の 同じ頭数の最良のBox */
+export type BoxAlternative = BoxCandidate & {
+    // 入れる馬の馬番
+    includes: number;
+    // 同じ頭数の最良のBoxとの的中確率の差 0以上
+    hitProbabilityLoss: number;
+};
+
+/**
+ * 最良のBoxに入らない馬を 1頭ずつ入れた場合の 同じ頭数の最良のBoxを求める
+ *
+ * 点数の上限内の最良のBoxは 勝率の上位の馬になり 人気順と同じになる
+ * 勝率が低くても 他の根拠で入れたい馬がいる場合に 入れることで的中確率がどれだけ下がるかを示す
+ *
+ * @param horseNumbers - 出走馬の馬番
+ * @param probabilities - 出走馬ごとの勝率(horseNumbersと同じ並び 合計1)
+ * @param best - 同じ頭数の最良のBox(candidateBoxesの先頭)
+ * @returns 母集団(勝率の上位12頭)のうち最良のBoxに入らない馬ごとの 勝率の高い順 頭数が出走頭数以上なら空
+ * @throws {RangeError} 馬番と勝率の長さが違う場合
+ */
+export function alternativeBoxes(
+    horseNumbers: readonly number[],
+    probabilities: readonly number[],
+    best: BoxCandidate,
+): BoxAlternative[] {
+    if (horseNumbers.length !== probabilities.length) {
+        throw new RangeError("horse numbers and probabilities must have the same length");
+    }
+    const horses = best.horseNumbers.length;
+    const pool = candidatePool(horseNumbers, probabilities);
+    const members = new Set(best.horseNumbers);
+
+    const alternatives: BoxAlternative[] = [];
+    for (const outsider of pool) {
+        if (members.has(outsider.horseNumber)) {
+            continue;
+        }
+        const others = pool.filter((entry) => entry.horseNumber !== outsider.horseNumber);
+        let top: BoxCandidate | undefined;
+        forEachCombination(others.length, horses - 1, (indices) => {
+            const chosen = [outsider, ...indices.map((poolIndex) => others[poolIndex])];
+            const candidate: BoxCandidate = {
+                horseNumbers: chosen.map((entry) => entry?.horseNumber ?? 0).sort((a, b) => a - b),
+                ticketCount: best.ticketCount,
+                costYen: best.costYen,
+                hitProbability: boxHitProbability(
+                    probabilities,
+                    chosen.map((entry) => entry?.index ?? 0),
+                ),
+            };
+            if (top == null || compareCandidates(candidate, top) < 0) {
+                top = candidate;
+            }
+        });
+        if (top != null) {
+            alternatives.push({
+                ...top,
+                includes: outsider.horseNumber,
+                hitProbabilityLoss: Math.max(best.hitProbability - top.hitProbability, 0),
+            });
+        }
+    }
+    return alternatives;
 }
 
 /**

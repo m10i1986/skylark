@@ -7,6 +7,8 @@ import { and, asc, desc, eq, gte, inArray, lt, max, type SQL, sql } from "drizzl
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
 
 import { payoutKey, type WinPayouts } from "../predict/evaluation.ts";
+import { condenseRaceClass, courseOf, type PastRun } from "../predict/form.ts";
+import { isValidOdds } from "../predict/market.ts";
 import { parseHorseNumbers, type TrifectaResult } from "../predict/trifecta.ts";
 import type { RaceRecord, RunnerRecord } from "../predict/types.ts";
 import type { Database } from "./crud.ts";
@@ -14,6 +16,7 @@ import { uniqueSortedByKey } from "./ordering.ts";
 import {
     type BoxProposalRecord,
     boxProposalTable,
+    jockeyTable,
     type PredictionModelRecord,
     type PredictionRecord,
     payoffTable,
@@ -22,6 +25,9 @@ import {
     raceInfoTable,
     raceResultTable,
 } from "./schema.ts";
+
+// IN句に渡す値の数の上限 1回のクエリの引数の数を抑える
+const IN_LIST_CHUNK_SIZE = 500;
 
 /** 単勝の券種(util.ts の TICKET_TYPES の添字) */
 const WIN_TICKET_TYPE = 0;
@@ -190,6 +196,114 @@ export class PredictionRepository {
             current.runners.push(runner);
         }
         return races;
+    }
+
+    /**
+     * 馬ごとの過去の出走を 指定日より前の分だけ読み込む
+     *
+     * 開催日が beforeDate 以降のレースは含めない(当日や結果が出た後のレースの結果を混ぜないため)
+     * 出走頭数と上がりの順位は そのレースの全出走馬から求める
+     *
+     * @param horseIds - 馬の識別子
+     * @param beforeDate - この開催日より前(YYYY-MM-DD)
+     * @returns 馬の識別子から 出走(新しい順)への対応 出走が無い馬は含まない
+     */
+    async loadHorseRuns(horseIds: readonly number[], beforeDate: string): Promise<Map<number, PastRun[]>> {
+        const ids = [...new Set(horseIds)];
+        const runsByHorse = new Map<number, PastRun[]>();
+        if (ids.length === 0) {
+            return runsByHorse;
+        }
+
+        const rows = await this.db
+            .select({
+                horseId: raceResultTable.horseId,
+                raceId: raceResultTable.raceId,
+                date: raceInfoTable.date,
+                raceName: raceInfoTable.raceName,
+                placeDetail: raceInfoTable.placeDetail,
+                raceClass: raceInfoTable.raceClass,
+                trackSurface: raceInfoTable.trackSurface,
+                distance: raceInfoTable.distance,
+                trackCondition: raceInfoTable.trackCondition,
+                orderOfFinish: raceResultTable.orderOfFinish,
+                popularity: raceResultTable.popularity,
+                odds: raceResultTable.odds,
+                margin: raceResultTable.margin,
+                finishingTime: raceResultTable.finishingTime,
+                lastPhase: raceResultTable.lastPhase,
+                passingRank: raceResultTable.passingRank,
+                jockeyName: jockeyTable.jockeyName,
+                basisWeight: raceResultTable.basisWeight,
+                horseWeight: raceResultTable.horseWeight,
+                horseWeightDiff: raceResultTable.horseWeightDiff,
+            })
+            .from(raceResultTable)
+            .innerJoin(raceInfoTable, eq(raceResultTable.raceId, raceInfoTable.id))
+            .leftJoin(jockeyTable, eq(jockeyTable.id, raceResultTable.jockeyId))
+            .where(and(inArray(raceResultTable.horseId, ids), lt(raceInfoTable.date, beforeDate)))
+            .orderBy(asc(raceResultTable.horseId), desc(raceInfoTable.date), desc(raceResultTable.raceId));
+
+        const fields = await this.loadFieldStatistics([...new Set(rows.map((row) => row.raceId))]);
+        for (const row of rows) {
+            const field = fields.get(row.raceId);
+            const run: PastRun = {
+                raceId: row.raceId,
+                date: row.date,
+                raceName: row.raceName,
+                course: courseOf(row.placeDetail),
+                raceClass: condenseRaceClass(row.raceClass),
+                trackSurface: row.trackSurface,
+                distance: row.distance,
+                trackCondition: row.trackCondition,
+                fieldSize: field?.fieldSize ?? 0,
+                orderOfFinish: row.orderOfFinish,
+                popularity: row.popularity,
+                odds: row.odds,
+                margin: row.margin,
+                finishingTime: row.finishingTime,
+                lastPhase: row.lastPhase,
+                lastPhaseRank:
+                    row.lastPhase == null || field == null
+                        ? null
+                        : 1 + field.lastPhases.filter((other) => other < (row.lastPhase ?? 0)).length,
+                passingRank: row.passingRank,
+                jockeyName: row.jockeyName,
+                basisWeight: row.basisWeight,
+                horseWeight: row.horseWeight,
+                horseWeightDiff: row.horseWeightDiff,
+            };
+            const runs = runsByHorse.get(row.horseId) ?? [];
+            runs.push(run);
+            runsByHorse.set(row.horseId, runs);
+        }
+        return runsByHorse;
+    }
+
+    // レースごとの出走頭数(単勝オッズが付いた馬)と 上がり3ハロンのタイム
+    private async loadFieldStatistics(
+        raceIds: readonly number[],
+    ): Promise<Map<number, { fieldSize: number; lastPhases: number[] }>> {
+        const fields = new Map<number, { fieldSize: number; lastPhases: number[] }>();
+        for (let start = 0; start < raceIds.length; start += IN_LIST_CHUNK_SIZE) {
+            const rows = await this.db
+                .select({
+                    raceId: raceResultTable.raceId,
+                    odds: raceResultTable.odds,
+                    lastPhase: raceResultTable.lastPhase,
+                })
+                .from(raceResultTable)
+                .where(inArray(raceResultTable.raceId, raceIds.slice(start, start + IN_LIST_CHUNK_SIZE)));
+            for (const row of rows) {
+                const field = fields.get(row.raceId) ?? { fieldSize: 0, lastPhases: [] };
+                field.fieldSize += isValidOdds(row.odds) ? 1 : 0;
+                if (row.lastPhase != null) {
+                    field.lastPhases.push(row.lastPhase);
+                }
+                fields.set(row.raceId, field);
+            }
+        }
+        return fields;
     }
 
     /**

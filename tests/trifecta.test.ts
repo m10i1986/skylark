@@ -6,6 +6,7 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+    alternativeBoxes,
     boxHitProbability,
     boxHitProbabilityByNumbers,
     boxPayoff,
@@ -274,6 +275,71 @@ describe("candidateBoxes", () => {
     test("長さが違う入力と 候補数が1未満は拒否する", () => {
         expect(() => candidateBoxes([1, 2, 3], [0.5, 0.5], { maxTickets: 60, perSize: 1 })).toThrow(RangeError);
         expect(() => candidateBoxes(horseNumbers, probabilities, { maxTickets: 60, perSize: 0 })).toThrow(RangeError);
+    });
+});
+
+describe("alternativeBoxes", () => {
+    const horseNumbers = [1, 2, 3, 4, 5, 6, 7, 8];
+    const probabilities = normalized([30, 20, 15, 10, 8, 6, 5, 3]);
+    const best = candidateBoxes(horseNumbers, probabilities, { maxTickets: 24, perSize: 1, minHorses: 4 })[0];
+
+    test("最良のBoxに入らない馬ごとに その馬を入れた同じ頭数の最良のBoxを 勝率の高い順に返す", () => {
+        if (best == null) {
+            throw new Error("no best box");
+        }
+        const alternatives = alternativeBoxes(horseNumbers, probabilities, best);
+
+        expect(best.horseNumbers).toEqual([1, 2, 3, 4]);
+        expect(alternatives.map((alternative) => alternative.includes)).toEqual([5, 6, 7, 8]);
+        // 5番を入れる最良は 4番を外した組み合わせ
+        expect(alternatives[0]?.horseNumbers).toEqual([1, 2, 3, 5]);
+        for (const alternative of alternatives) {
+            expect(alternative.horseNumbers).toHaveLength(4);
+            expect(alternative.horseNumbers).toContain(alternative.includes);
+            expect(alternative.ticketCount).toBe(24);
+            expect(alternative.costYen).toBe(2400);
+        }
+    });
+
+    test("的中確率は独立な計算と一致し 低下は最良のBoxとの差で 勝率が低い馬ほど大きい", () => {
+        if (best == null) {
+            throw new Error("no best box");
+        }
+        const alternatives = alternativeBoxes(horseNumbers, probabilities, best);
+        for (const alternative of alternatives) {
+            const members = alternative.horseNumbers.map((horseNumber) => horseNumber - 1);
+            expect(alternative.hitProbability).toBeCloseTo(bruteForceHitProbability(probabilities, members), 12);
+            expect(alternative.hitProbabilityLoss).toBeCloseTo(best.hitProbability - alternative.hitProbability, 12);
+            expect(alternative.hitProbabilityLoss).toBeGreaterThan(0);
+        }
+        const losses = alternatives.map((alternative) => alternative.hitProbabilityLoss);
+        expect(losses).toEqual([...losses].sort((a, b) => a - b));
+    });
+
+    test("母集団は勝率の上位12頭で 18頭立てでも最良のBoxの外から8頭を返す", () => {
+        const numbers = Array.from({ length: 18 }, (_, index) => index + 1);
+        const many = normalized(numbers.map((number) => 40 - number));
+        const top = candidateBoxes(numbers, many, { maxTickets: 24, perSize: 1, minHorses: 4 })[0];
+        if (top == null) {
+            throw new Error("no best box");
+        }
+        const alternatives = alternativeBoxes(numbers, many, top);
+        expect(alternatives.map((alternative) => alternative.includes)).toEqual([5, 6, 7, 8, 9, 10, 11, 12]);
+    });
+
+    test("出走馬の全てがBoxに入る場合は 入れる馬がいないため空を返す", () => {
+        const all = candidateBoxes([1, 2, 3], normalized([5, 3, 2]), { maxTickets: 6, perSize: 1 })[0];
+        if (all == null) {
+            throw new Error("no best box");
+        }
+        expect(alternativeBoxes([1, 2, 3], normalized([5, 3, 2]), all)).toEqual([]);
+    });
+
+    test("馬番と勝率の長さが違えば例外にする", () => {
+        if (best == null) {
+            throw new Error("no best box");
+        }
+        expect(() => alternativeBoxes([1, 2, 3], [0.5, 0.5], best)).toThrow(RangeError);
     });
 });
 

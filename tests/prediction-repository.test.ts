@@ -132,6 +132,105 @@ describe("loadRaceRecords", () => {
     });
 });
 
+describe("loadHorseRuns", () => {
+    // 開催日と場所を指定してレースを登録する
+    async function seedPastRace(raceId: number, date: string, overrides: Record<string, unknown> = {}): Promise<void> {
+        await crud.insertRaceInfo({
+            id: raceId,
+            raceName: `第1回テスト特別(GII) ${raceId}`,
+            date,
+            distance: 2400,
+            trackSurface: "芝",
+            trackCondition: "良",
+            raceNumber: 11,
+            placeDetail: "4回阪神7日目",
+            raceClass: "3歳オープン  (国際) 牡・牝(指)(馬齢)",
+            ...overrides,
+        });
+    }
+
+    beforeEach(async () => {
+        await crud.insertJockeys([{ id: "01126", jockeyName: "テスト騎手" }]);
+    });
+
+    test("reads only the runs before the date, newest first, and never the race day or later", async () => {
+        await seedPastRace(202605040701, "2026-02-01");
+        await seedPastRace(202605040702, "2026-03-01");
+        await seedPastRace(202605040703, "2026-04-01");
+        await seedPastRace(202605040704, "2026-04-02");
+        await crud.insertRaceResults([
+            resultRecord(202605040701, 1, { horseId: 1, orderOfFinish: 3 }),
+            resultRecord(202605040702, 1, { horseId: 1, orderOfFinish: 1 }),
+            // 基準日と同じ開催日と それより後の結果は含めない
+            resultRecord(202605040703, 1, { horseId: 1, orderOfFinish: 2 }),
+            resultRecord(202605040704, 1, { horseId: 1, orderOfFinish: 1 }),
+        ]);
+
+        const runs = await repository.loadHorseRuns([1], "2026-04-01");
+
+        expect(runs.get(1)?.map((run) => [run.date, run.orderOfFinish])).toEqual([
+            ["2026-03-01", 1],
+            ["2026-02-01", 3],
+        ]);
+    });
+
+    test("fills the field size, the last phase rank, the course, the class and the jockey name", async () => {
+        await seedPastRace(202605040701, "2026-02-01");
+        await crud.insertRaceResults([
+            resultRecord(202605040701, 1, { horseId: 1, jockeyId: "01126", lastPhase: 34.0, odds: 2.5 }),
+            resultRecord(202605040701, 2, { horseId: 2, jockeyId: "09999", lastPhase: 33.5, odds: 4.0 }),
+            resultRecord(202605040701, 3, { horseId: 3, lastPhase: 34.0, odds: 9.0 }),
+            // 取消の馬は出走頭数に数えない
+            resultRecord(202605040701, 4, { horseId: 3, lastPhase: null, odds: null, orderOfFinish: null }),
+        ]);
+
+        const run = (await repository.loadHorseRuns([1], "2026-03-01")).get(1)?.[0];
+
+        expect(run).toMatchObject({
+            raceId: 202605040701,
+            course: "阪神",
+            raceClass: "3歳オープン",
+            trackSurface: "芝",
+            distance: 2400,
+            trackCondition: "良",
+            fieldSize: 3,
+            // 上がりは33.5が最速で 34.0は同タイムの2頭が2位
+            lastPhase: 34.0,
+            lastPhaseRank: 2,
+            jockeyName: "テスト騎手",
+        });
+        expect(run?.raceName).toContain("(GII)");
+    });
+
+    test("returns the runs of each horse separately and leaves out horses without a run", async () => {
+        await seedPastRace(202605040701, "2026-02-01");
+        await crud.insertRaceResults([
+            resultRecord(202605040701, 1, { horseId: 1 }),
+            resultRecord(202605040701, 2, { horseId: 2 }),
+        ]);
+
+        const runs = await repository.loadHorseRuns([1, 2, 3, 1], "2026-03-01");
+
+        expect([...runs.keys()].sort()).toEqual([1, 2]);
+        expect(runs.get(1)).toHaveLength(1);
+    });
+
+    test("returns an empty map for no horses", async () => {
+        expect((await repository.loadHorseRuns([], "2026-03-01")).size).toBe(0);
+    });
+
+    test("keeps a null jockey name and a null rank when they are unknown", async () => {
+        await seedPastRace(202605040701, "2026-02-01", { placeDetail: "", raceClass: "(馬齢)" });
+        await crud.insertRaceResults([
+            resultRecord(202605040701, 1, { horseId: 1, jockeyId: "09999", lastPhase: null }),
+        ]);
+
+        const run = (await repository.loadHorseRuns([1], "2026-03-01")).get(1)?.[0];
+
+        expect(run).toMatchObject({ jockeyName: null, lastPhaseRank: null, course: null, raceClass: null });
+    });
+});
+
 describe("loadWinPayouts", () => {
     test("reads only win tickets, by race and horse number", async () => {
         await seedRace(202605040701, "2026-02-01");
