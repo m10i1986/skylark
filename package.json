@@ -30,7 +30,7 @@
         "domhandler": "^5.0.3",
         "dotenv": "^18.0.8",
         "drizzle-orm": "^0.45.4",
-        "hono": "^4.13.13",
+        "hono": "^4.13.16",
         "lucide-react": "^1.58.0",
         "playwright": "^1.64.1",
         "radix-ui": "^1.8.1",
